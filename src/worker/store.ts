@@ -35,6 +35,7 @@ export interface Store {
 
   createAsset(asset: Asset): Promise<Asset>;
   getAsset(id: string): Promise<Asset | null>;
+  getAssetBySourceJobId(jobId: string): Promise<Asset | null>;
   updateAssetPeaks(id: string, peaksR2Key: string): Promise<Asset | null>;
 
   createClip(clip: Clip): Promise<Clip>;
@@ -42,6 +43,7 @@ export interface Store {
 
   createJob(job: Job): Promise<Job>;
   getJob(id: string): Promise<Job | null>;
+  claimJobForIngest(id: string): Promise<{ claimed: boolean; job: Job | null }>;
   updateJob(
     id: string,
     patch: Partial<Pick<Job, "status" | "bridgeJobId" | "error" | "resultAssetIds" | "updatedAt">>,
@@ -140,14 +142,14 @@ export function createMemoryStore(): Store {
     },
     async deleteProject(id) {
       if (!projects.has(id)) return false;
+      const projectLaneIds = new Set(
+        [...lanes.values()].filter((lane) => lane.projectId === id).map((lane) => lane.id),
+      );
       projects.delete(id);
-      for (const [lid, lane] of lanes) if (lane.projectId === id) lanes.delete(lid);
+      for (const [cid, clip] of clips) if (projectLaneIds.has(clip.laneId)) clips.delete(cid);
       for (const [aid, asset] of assets) if (asset.projectId === id) assets.delete(aid);
-      for (const [cid, clip] of clips) {
-        const lane = lanes.get(clip.laneId);
-        if (!lane || lane.projectId === id) clips.delete(cid);
-      }
       for (const [jid, job] of jobs) if (job.projectId === id) jobs.delete(jid);
+      for (const laneId of projectLaneIds) lanes.delete(laneId);
       return true;
     },
     async getDocument(id) {
@@ -225,6 +227,9 @@ export function createMemoryStore(): Store {
     async getAsset(id) {
       return assets.get(id) ?? null;
     },
+    async getAssetBySourceJobId(jobId) {
+      return [...assets.values()].find((asset) => asset.sourceJobId === jobId) ?? null;
+    },
     async updateAssetPeaks(id, peaksR2Key) {
       const current = assets.get(id);
       if (!current) return null;
@@ -248,6 +253,15 @@ export function createMemoryStore(): Store {
     },
     async getJob(id) {
       return jobs.get(id) ?? null;
+    },
+    async claimJobForIngest(id) {
+      const current = jobs.get(id) ?? null;
+      if (!current || (current.status !== "queued" && current.status !== "running")) {
+        return { claimed: false, job: current };
+      }
+      const job = { ...current, status: "ingesting" as const, updatedAt: now() };
+      jobs.set(id, job);
+      return { claimed: true, job };
     },
     async updateJob(id, patch) {
       const current = jobs.get(id);
@@ -680,7 +694,7 @@ export function createD1Store(db: D1Database): Store {
     async createAsset(asset) {
       await db
         .prepare(
-          `INSERT INTO assets (id, project_id, kind, r2_key, mime, bytes, duration_sec, sample_rate, channels, source, source_job_id, peaks_r2_key, created_at)
+          `INSERT OR IGNORE INTO assets (id, project_id, kind, r2_key, mime, bytes, duration_sec, sample_rate, channels, source, source_job_id, peaks_r2_key, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .bind(
@@ -699,10 +713,17 @@ export function createD1Store(db: D1Database): Store {
           asset.createdAt,
         )
         .run();
-      return asset;
+      return (await store.getAsset(asset.id)) ?? asset;
     },
     async getAsset(id) {
       const row = await db.prepare(`SELECT * FROM assets WHERE id = ?`).bind(id).first<AssetRow>();
+      return row ? mapAsset(row) : null;
+    },
+    async getAssetBySourceJobId(jobId) {
+      const row = await db
+        .prepare(`SELECT * FROM assets WHERE source_job_id = ? LIMIT 1`)
+        .bind(jobId)
+        .first<AssetRow>();
       return row ? mapAsset(row) : null;
     },
     async updateAssetPeaks(id, peaksR2Key) {
@@ -714,7 +735,7 @@ export function createD1Store(db: D1Database): Store {
     async createClip(clip) {
       await db
         .prepare(
-          `INSERT INTO clips (id, lane_id, asset_id, start_beats, length_beats, cue_in_sec, fade_in_sec, fade_out_sec, gain_db, synth_pattern, label, created_at, updated_at)
+          `INSERT OR IGNORE INTO clips (id, lane_id, asset_id, start_beats, length_beats, cue_in_sec, fade_in_sec, fade_out_sec, gain_db, synth_pattern, label, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .bind(
@@ -769,6 +790,20 @@ export function createD1Store(db: D1Database): Store {
     async getJob(id) {
       const row = await db.prepare(`SELECT * FROM jobs WHERE id = ?`).bind(id).first<JobRow>();
       return row ? mapJob(row) : null;
+    },
+    async claimJobForIngest(id) {
+      const updatedAt = now();
+      const result = await db
+        .prepare(
+          `UPDATE jobs SET status = 'ingesting', updated_at = ?
+           WHERE id = ? AND status IN ('queued', 'running')`,
+        )
+        .bind(updatedAt, id)
+        .run();
+      return {
+        claimed: (result.meta.changes ?? 0) === 1,
+        job: await store.getJob(id),
+      };
     },
     async updateJob(id, patch) {
       const current = await store.getJob(id);

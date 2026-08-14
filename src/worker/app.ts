@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { secToBeats } from "@shared/beats";
 import { newId } from "@shared/ids";
 import { jobTimedOut, mapBridgeStatus, isTerminalJobStatus } from "@shared/jobs";
 import type {
@@ -22,6 +23,7 @@ import {
 import type { Env } from "./env";
 import { ingestSucceededJob } from "./ingest";
 import { createD1Store, type Store } from "./store";
+import { parseWavHeader } from "./wav";
 
 export type AppEnv = {
   Bindings: Env;
@@ -150,6 +152,7 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
     const ext = guessExt(mime);
     const r2Key = `projects/${projectId}/audio/${assetId}.${ext}`;
     await c.env.MEDIA.put(r2Key, bytes, { httpMetadata: { contentType: mime } });
+    const wav = parseWavHeader(bytes);
     const t = Date.now();
     const asset = await store.createAsset({
       id: assetId,
@@ -158,9 +161,9 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
       r2Key,
       mime,
       bytes: bytes.byteLength,
-      durationSec: null,
-      sampleRate: null,
-      channels: null,
+      durationSec: wav?.durationSec ?? null,
+      sampleRate: wav?.sampleRate ?? null,
+      channels: wav?.channels ?? null,
       source: "import",
       sourceJobId: null,
       peaksR2Key: null,
@@ -171,7 +174,8 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
       laneId: lane.id,
       assetId: asset.id,
       startBeats,
-      lengthBeats: 16,
+      // Non-WAV or unparsable uploads keep the documented 16-beat M3 fallback.
+      lengthBeats: wav ? secToBeats(wav.durationSec, project.bpm) : 16,
       cueInSec: 0,
       fadeInSec: 0,
       fadeOutSec: 0,
@@ -279,18 +283,27 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
     if (!job) return jsonError(c, 404, "not_found");
     if (isTerminalJobStatus(job.status)) return c.json(job);
 
-    const durationSec = Number((job.params as Music3JobParams).durationSec ?? 60);
-    if (jobTimedOut(job.createdAt, durationSec)) {
-      job = (await store.updateJob(job.id, { status: "failed", error: "timeout" })) ?? job;
-      return c.json(job);
-    }
-
     if (!job.bridgeJobId) return c.json(job);
 
     try {
       const view = await bridgeGetJob(c.env, job.bridgeJobId);
       const mapped = mapBridgeStatus(view.status);
-      if (mapped === "ingesting") {
+      if (mapped === "running") {
+        if (job.status !== "running") {
+          // This update is the queued-to-running timestamp used by the timeout guard.
+          job = (await store.updateJob(job.id, { status: "running" })) ?? job;
+        } else {
+          const durationSec = Number((job.params as Music3JobParams).durationSec ?? 60);
+          if (jobTimedOut(job.updatedAt, durationSec)) {
+            try {
+              await bridgeCancelJob(c.env, job.bridgeJobId);
+            } catch {
+              // The local timeout remains authoritative if cancellation cannot be confirmed.
+            }
+            job = (await store.updateJob(job.id, { status: "failed", error: "timeout" })) ?? job;
+          }
+        }
+      } else if (mapped === "ingesting") {
         job = await ingestSucceededJob(c.env, store, job);
       } else if (mapped === "failed" || mapped === "cancelled") {
         job =
