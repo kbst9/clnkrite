@@ -109,6 +109,24 @@ describe("worker regressions", () => {
     expect((await store.getDocument(project.id))?.lanes).toHaveLength(1);
   });
 
+  it("uses browser-supplied video duration instead of truncating picture clips to 16 beats", async () => {
+    const store = createMemoryStore();
+    const app = createApp({ storeFactory: () => store });
+    const env = mockEnv();
+    const project = await store.createProject({ title: "Picture", bpm: 90 });
+    const lane = await store.createLane(project.id, { kind: "picture" });
+    const form = new FormData();
+    form.append("file", new File([new Uint8Array([0, 1, 2, 3])], "scene.mp4", { type: "video/mp4" }));
+    form.append("laneId", lane!.id);
+    form.append("durationSec", "42");
+
+    const response = await app.request(`/api/projects/${project.id}/assets`, { method: "POST", body: form }, env);
+    expect(response.status).toBe(201);
+    const body = (await response.json()) as { asset: Asset; clip: Clip };
+    expect(body.asset.durationSec).toBe(42);
+    expect(body.clip.lengthBeats).toBeCloseTo(63);
+  });
+
   it("starts timeout accounting only after queued jobs become running", async () => {
     const store = createMemoryStore();
     const app = createApp({ storeFactory: () => store });
@@ -197,6 +215,49 @@ describe("worker regressions", () => {
     expect(remaining?.clips.map((item) => item.id)).toEqual(["clip-second"]);
     expect(remaining?.jobs.map((item) => item.id)).toEqual(["job-second"]);
   });
+
+  it("serves bounded and suffix byte ranges and rejects invalid ranges", async () => {
+    const store = createMemoryStore();
+    const app = createApp({ storeFactory: () => store });
+    const project = await store.createProject({ title: "Ranges" });
+    const bytes = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7]);
+    await store.createAsset({
+      id: "video-range",
+      projectId: project.id,
+      kind: "video",
+      r2Key: "video.mp4",
+      mime: "video/mp4",
+      bytes: bytes.byteLength,
+      durationSec: null,
+      sampleRate: null,
+      channels: null,
+      source: "video",
+      sourceJobId: null,
+      peaksR2Key: null,
+      createdAt: Date.now(),
+    });
+    const env = mockEnv();
+    env.MEDIA = {
+      get: async (_key: string, options?: { range?: { offset: number; length: number } }) => {
+        const range = options?.range;
+        const body = range ? bytes.slice(range.offset, range.offset + range.length) : bytes;
+        return { body, etag: "etag", httpEtag: '"etag"' };
+      },
+    } as unknown as R2Bucket;
+
+    const bounded = await app.request("/api/assets/video-range/blob", { headers: { Range: "bytes=2-99" } }, env);
+    expect(bounded.status).toBe(206);
+    expect(bounded.headers.get("Content-Range")).toBe("bytes 2-7/8");
+    expect([...new Uint8Array(await bounded.arrayBuffer())]).toEqual([2, 3, 4, 5, 6, 7]);
+
+    const suffix = await app.request("/api/assets/video-range/blob", { headers: { Range: "bytes=-3" } }, env);
+    expect(suffix.status).toBe(206);
+    expect([...new Uint8Array(await suffix.arrayBuffer())]).toEqual([5, 6, 7]);
+
+    const invalid = await app.request("/api/assets/video-range/blob", { headers: { Range: "bytes=12-13" } }, env);
+    expect(invalid.status).toBe(416);
+    expect(invalid.headers.get("Content-Range")).toBe("bytes */8");
+  });
 });
 
 describe("stem explode ingest", () => {
@@ -259,5 +320,70 @@ describe("stem explode ingest", () => {
     expect(kids.map((item) => item.stemRole)).toEqual(["vocals", "drums", "bass", "other"]);
     expect(doc?.clips.filter((item) => kids.some((kid) => kid.id === item.laneId))).toHaveLength(4);
     expect((await store.getJob(job.id))?.status).toBe("succeeded");
+  });
+
+  it("re-explode replaces the four stem clips without duplicating lanes or sort orders", async () => {
+    const store = createMemoryStore();
+    const project = await store.createProject({ title: "Re-explode", bpm: 120 });
+    const parent = await store.createLane(project.id, { kind: "music3", name: "Mix", arm: true });
+    const trailing = await store.createLane(project.id, { kind: "synth", name: "After" });
+    const now = Date.now();
+    await store.createAsset({
+      id: "mix-again",
+      projectId: project.id,
+      kind: "audio",
+      r2Key: "mix-again.wav",
+      mime: "audio/wav",
+      bytes: 44,
+      durationSec: 4,
+      sampleRate: 8000,
+      channels: 1,
+      source: "music3",
+      sourceJobId: "generate",
+      peaksR2Key: null,
+      createdAt: now,
+    });
+    await store.createClip({
+      id: "mix-again-clip",
+      laneId: parent!.id,
+      assetId: "mix-again",
+      startBeats: 4,
+      lengthBeats: 8,
+      cueInSec: 0.25,
+      fadeInSec: 0,
+      fadeOutSec: 0,
+      gainDb: 0,
+      synthPattern: null,
+      label: "mix",
+      createdAt: now,
+      updatedAt: now,
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(wavBuffer(), { status: 200 })));
+
+    for (const id of ["explode-one", "explode-two"]) {
+      const job = await store.createJob({
+        id,
+        projectId: project.id,
+        laneId: parent!.id,
+        kind: "demucs_split",
+        params: { sourceAssetId: "mix-again", sourceClipId: "mix-again-clip", playheadBeats: 4 },
+        status: "running",
+        bridgeJobId: `bridge-${id}`,
+        error: null,
+        resultAssetIds: [],
+        createdAt: now,
+        updatedAt: now,
+      });
+      await ingestSucceededJob(mockEnv(), store, job);
+    }
+
+    const doc = await store.getDocument(project.id);
+    const children = doc?.lanes.filter((lane) => lane.parentLaneId === parent!.id) ?? [];
+    const childIds = new Set(children.map((lane) => lane.id));
+    expect(children).toHaveLength(4);
+    expect(doc?.clips.filter((clip) => childIds.has(clip.laneId))).toHaveLength(4);
+    expect(doc?.lanes.map((lane) => lane.sortOrder)).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(doc?.lanes.at(-1)?.id).toBe(trailing!.id);
+    expect(doc?.clips.filter((clip) => childIds.has(clip.laneId)).every((clip) => clip.id.includes("explode-two"))).toBe(true);
   });
 });

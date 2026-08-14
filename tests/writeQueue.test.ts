@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ProjectDocument } from "../src/shared/types";
+import type { Clip, ProjectDocument } from "../src/shared/types";
 import { WriteQueue } from "../src/client/lib/writeQueue";
 import { useProjectStore } from "../src/client/stores/projectStore";
 
@@ -47,6 +47,25 @@ function projectDocument(): ProjectDocument {
     clips: [],
     assets: [],
     jobs: [],
+  };
+}
+
+function clipRecord(id: string): Clip {
+  const now = Date.now();
+  return {
+    id,
+    laneId: "lane-queue",
+    assetId: "asset-queue",
+    startBeats: 0,
+    lengthBeats: 8,
+    cueInSec: 0,
+    fadeInSec: 0,
+    fadeOutSec: 0,
+    gainDb: 0,
+    synthPattern: null,
+    label: "take",
+    createdAt: now,
+    updatedAt: now,
   };
 }
 
@@ -123,5 +142,69 @@ describe("write persistence queue", () => {
     expect(queue.pending).toBe(0);
     expect(attempts).toBe(2);
     expect(error).toHaveBeenCalledOnce();
+  });
+
+  it("merges crop and move deltas into one clip PATCH", async () => {
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const doc = projectDocument();
+    doc.clips = [clipRecord("clip-merge")];
+    useProjectStore.getState().replaceDoc(doc);
+
+    useProjectStore.getState().patchClip("clip-merge", {
+      startBeats: 1,
+      lengthBeats: 7,
+      cueInSec: 0.5,
+    }, false);
+    useProjectStore.getState().moveClips(["clip-merge"], 2, 0.25, false, false);
+    await useProjectStore.getState().flush();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({
+      startBeats: 3,
+      lengthBeats: 7,
+      cueInSec: 0.5,
+    });
+  });
+
+  it("coalesces an optimistic add immediately undone before POST", async () => {
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    useProjectStore.getState().replaceDoc(projectDocument());
+    const clip = clipRecord("clip-never-posted");
+
+    useProjectStore.getState().addClip(clip, false);
+    useProjectStore.getState().removeClips([clip.id], false);
+    await useProjectStore.getState().flush();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("flushes optimistic clip edits before reloading the project document", async () => {
+    const serverDoc = projectDocument();
+    serverDoc.clips = [clipRecord("clip-before-reload")];
+    const calls: string[] = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      calls.push(`${init?.method ?? "GET"} ${url}`);
+      if (init?.method === "PATCH") {
+        const patch = JSON.parse(String(init.body)) as Partial<Clip>;
+        serverDoc.clips[0] = { ...serverDoc.clips[0]!, ...patch };
+        return new Response(JSON.stringify(serverDoc.clips[0]), { status: 200 });
+      }
+      return new Response(JSON.stringify(serverDoc), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    useProjectStore.getState().replaceDoc(structuredClone(serverDoc));
+
+    useProjectStore.getState().patchClip("clip-before-reload", { startBeats: 6 }, false);
+    await useProjectStore.getState().loadProject("project-queue");
+
+    expect(calls).toEqual([
+      "PATCH /api/clips/clip-before-reload",
+      "GET /api/projects/project-queue",
+    ]);
+    expect(useProjectStore.getState().doc?.clips[0]?.startBeats).toBe(6);
   });
 });
