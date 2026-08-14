@@ -25,7 +25,7 @@ Bind to localhost only. The tunnel is the public door.
 | `MUSIC3_BASE_URL` | `http://127.0.0.1:8000` | SGLang-Omni origin |
 | `MUSIC3_MODEL` | empty | Fallback model id if `GET /v1/models` is empty |
 | `MUSIC3_API_KEY` | empty | Optional `Authorization: Bearer` |
-| `ACESTEP_BASE_URL` | `http://127.0.0.1:8001` | Optional ACE-Step 1.5 (adapter is a stub in M3) |
+| `ACESTEP_BASE_URL` | `http://127.0.0.1:8001` | Optional ACE-Step 1.5 |
 | `ACESTEP_API_KEY` | empty | Optional |
 | `PORT` | `8300` | Listen port |
 | `CLNKRITE_SCRATCH` | `~/.clnkrite-bridge` | Job artifacts; pruned after 24 h |
@@ -42,7 +42,7 @@ Queue is strictly serial (`maxConcurrency = 1`). One GPU.
 
 If `MUSIC3_BASE_URL` is unreachable, the job **fails immediately** with a clear error. It does not hang.
 
-ACE-Step and Demucs adapters report **unavailable** in this M3 skeleton.
+ACE-Step adapter: release_task, poll query_result, download /v1/audio. Demucs adapter: demucs -n htdemucs, artifacts vocals/drums/bass/other.wav. POST /jobs/{id}/source accepts the source WAV from the Worker.
 
 ## Tunnel notes
 

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 # Every Music3 field name lives here so the M3 checklist is a config switch, not a rewrite.
@@ -107,12 +107,17 @@ def _load_scratch_jobs() -> list[str]:
         job.setdefault("error", None)
         job.setdefault("createdAt", dest.stat().st_mtime)
         job.setdefault("updatedAt", job["createdAt"])
+        stems = [dest / f"{role}.wav" for role in ("vocals", "drums", "bass", "other")]
         if output.is_file() and job.get("status") in {"running", "succeeded"}:
             job["status"] = "succeeded"
             job["error"] = None
             job["artifacts"] = [
                 _artifact_record(output, job.get("params", {}).get("durationSec"))
             ]
+        elif all(path.is_file() for path in stems) and job.get("status") in {"running", "succeeded", "queued"}:
+            job["status"] = "succeeded"
+            job["error"] = None
+            job["artifacts"] = [_artifact_record(path) for path in stems]
         elif job.get("status") == "running":
             job["status"] = "queued"
             job["error"] = "bridge_restarted"
@@ -249,9 +254,155 @@ async def run_music3(job: dict[str, Any]) -> None:
             await client.aclose()
 
 
-async def run_unavailable(job: dict[str, Any], name: str) -> None:
-    job["status"] = "failed"
-    job["error"] = f"{name} adapter unavailable"
+def _acestep_headers() -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    if ACESTEP_API_KEY:
+        headers["Authorization"] = f"Bearer {ACESTEP_API_KEY}"
+    return headers
+
+
+def _demucs_available() -> bool:
+    return shutil.which("demucs") is not None
+
+
+async def run_acestep(job: dict[str, Any]) -> None:
+    dest = SCRATCH / job["id"]
+    dest.mkdir(parents=True, exist_ok=True)
+    params = job.get("params") or {}
+    body = {
+        "prompt": params.get("prompt") or params.get("caption") or "",
+        "lyrics": params.get("lyrics") or "",
+        "audio_duration": float(params.get("audioDuration") or params.get("durationSec") or 60),
+        "bpm": int(params.get("bpm") or 120),
+        "task_type": "text2music",
+        "inference_steps": int(params.get("inferenceSteps") or 8),
+        "seed": int(params.get("seed") or 0),
+        "audio_format": "wav",
+    }
+    try:
+        job["_http"] = httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0))
+        res = await job["_http"].post(f"{ACESTEP_BASE_URL}/release_task", headers=_acestep_headers(), json=body)
+        if res.status_code >= 400:
+            job["status"] = "failed"
+            job["error"] = f"acestep_http_{res.status_code}: {res.text[:400]}"
+            return
+        data = res.json()
+        task_id = data.get("task_id") if isinstance(data, dict) else None
+        if not task_id:
+            job["status"] = "failed"
+            job["error"] = "acestep_missing_task_id"
+            return
+        while True:
+            if job.get("status") == "cancelled":
+                return
+            query = await job["_http"].post(
+                f"{ACESTEP_BASE_URL}/query_result",
+                headers=_acestep_headers(),
+                json=[task_id],
+            )
+            payload = query.json()
+            item = payload[0] if isinstance(payload, list) and payload else payload
+            status = item.get("status") if isinstance(item, dict) else None
+            if status == 1:
+                paths = item.get("audio_paths") or item.get("paths") or []
+                path = item.get("audio_path") or item.get("path") or (paths[0] if paths else None)
+                if not path:
+                    job["status"] = "failed"
+                    job["error"] = "acestep_missing_audio_path"
+                    return
+                audio = await job["_http"].get(
+                    f"{ACESTEP_BASE_URL}/v1/audio",
+                    headers=_acestep_headers(),
+                    params={"path": path},
+                )
+                if audio.status_code >= 400:
+                    job["status"] = "failed"
+                    job["error"] = f"acestep_audio_{audio.status_code}"
+                    return
+                out = dest / "output.wav"
+                out.write_bytes(audio.content)
+                job["artifacts"] = [_artifact_record(out, body["audio_duration"])]
+                job["status"] = "succeeded"
+                return
+            if status == 2:
+                job["status"] = "failed"
+                job["error"] = str(item.get("error") or "acestep_failed")
+                return
+            await asyncio.sleep(2)
+    except asyncio.CancelledError:
+        job["status"] = "cancelled"
+        job["error"] = "cancelled"
+        raise
+    except Exception as exc:
+        if job.get("status") != "cancelled":
+            job["status"] = "failed"
+            job["error"] = str(exc)
+    finally:
+        client = job.pop("_http", None)
+        if client:
+            await client.aclose()
+
+
+async def run_demucs(job: dict[str, Any]) -> None:
+    dest = SCRATCH / job["id"]
+    dest.mkdir(parents=True, exist_ok=True)
+    src = dest / "input.wav"
+    if not src.is_file():
+        url = (job.get("params") or {}).get("sourceUrl")
+        if not url:
+            job["status"] = "failed"
+            job["error"] = "missing_source"
+            return
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                res = await client.get(str(url))
+                if res.status_code >= 400:
+                    job["status"] = "failed"
+                    job["error"] = f"source_http_{res.status_code}"
+                    return
+                src.write_bytes(res.content)
+        except Exception as exc:
+            job["status"] = "failed"
+            job["error"] = f"source_download: {exc}"
+            return
+    if not _demucs_available():
+        job["status"] = "failed"
+        job["error"] = "demucs_unavailable"
+        return
+    outdir = dest / "stems"
+    outdir.mkdir(parents=True, exist_ok=True)
+    proc = await asyncio.create_subprocess_exec(
+        "demucs",
+        "-n",
+        "htdemucs",
+        "-o",
+        str(outdir),
+        str(src),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    job["_proc"] = proc
+    _stdout, stderr = await proc.communicate()
+    job.pop("_proc", None)
+    if job.get("status") == "cancelled":
+        return
+    if proc.returncode != 0:
+        job["status"] = "failed"
+        job["error"] = (stderr.decode("utf-8", errors="replace") or "demucs_failed")[:400]
+        return
+    found = list(outdir.rglob("*.wav"))
+    artifacts = []
+    for role in ("vocals", "drums", "bass", "other"):
+        match = next((path for path in found if path.stem == role), None)
+        if not match:
+            job["status"] = "failed"
+            job["error"] = "demucs_missing_stems"
+            return
+        target = dest / f"{role}.wav"
+        shutil.copy2(match, target)
+        artifacts.append(_artifact_record(target))
+    job["artifacts"] = artifacts
+    job["status"] = "succeeded"
 
 
 async def worker_loop() -> None:
@@ -272,9 +423,9 @@ async def worker_loop() -> None:
             if kind == "music3_generate":
                 await run_music3(job)
             elif kind == "acestep_generate":
-                await run_unavailable(job, "ACE-Step")
+                await run_acestep(job)
             elif kind == "demucs_split":
-                await run_unavailable(job, "Demucs")
+                await run_demucs(job)
             else:
                 job["status"] = "failed"
                 job["error"] = f"unknown_kind:{kind}"
@@ -304,7 +455,7 @@ async def health() -> dict[str, Any]:
     return {
         "music3": music3,
         "acestep": acestep,
-        "demucs": {"available": False},
+        "demucs": {"available": _demucs_available()},
         "queue": {"depth": depth, "running": running_id is not None},
     }
 
@@ -372,8 +523,27 @@ async def cancel_job(job_id: str) -> dict[str, str]:
     client = job.get("_http")
     if client:
         await client.aclose()
+    proc = job.get("_proc")
+    if proc and proc.returncode is None:
+        proc.kill()
     _persist_job(job)
     return {"ok": "cancelled"}
+
+
+@app.post("/jobs/{job_id}/source")
+async def put_source(job_id: str, request: Request) -> dict[str, str]:
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "not_found")
+    dest = SCRATCH / job_id
+    dest.mkdir(parents=True, exist_ok=True)
+    body = await request.body()
+    if not body:
+        raise HTTPException(400, "empty_source")
+    (dest / "input.wav").write_bytes(body)
+    job["updatedAt"] = _now()
+    _persist_job(job)
+    return {"ok": "stored"}
 
 
 @app.get("/")
