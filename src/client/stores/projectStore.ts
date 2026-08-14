@@ -185,6 +185,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     bindFlush();
     set({ loading: true, error: null });
     try {
+      await queue.flush();
+      if (queue.pending > 0) throw new Error("pending_writes");
       const doc = await api<ProjectDocument>(`/api/projects/${id}`);
       rememberPersistedClips(doc);
       set({ doc, loading: false });
