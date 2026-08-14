@@ -1,5 +1,7 @@
+import { useRef, useState } from "react";
 import type { LaneKind } from "@shared/types";
 import { useProjectStore } from "../stores/projectStore";
+import { useTransportStore } from "../stores/transportStore";
 import { useUiStore } from "../stores/uiStore";
 
 const SOURCES: Array<{ kind: LaneKind; title: string; blurb: string }> = [
@@ -18,7 +20,12 @@ export function AddLaneDrawer() {
   const bridgeOnline = useUiStore((s) => s.bridgeOnline);
   const addLane = useProjectStore((s) => s.addLane);
   const projectId = useProjectStore((s) => s.doc?.project.id);
+  const importLane = useProjectStore((s) => s.doc?.lanes.find((lane) => lane.kind === "import"));
   const loadProject = useProjectStore((s) => s.loadProject);
+  const playheadBeats = useTransportStore((s) => s.playheadBeats);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
 
   if (drawer !== "add-lane") return null;
 
@@ -30,11 +37,29 @@ export function AddLaneDrawer() {
 
   async function onImport(file: File) {
     if (!projectId) return;
-    const form = new FormData();
-    form.append("file", file);
-    await fetch(`/api/projects/${projectId}/assets`, { method: "POST", body: form });
-    await loadProject(projectId);
-    close();
+    setError(null);
+    setUploading(true);
+    try {
+      const lane = importLane ?? (await addLane({ kind: "import" }));
+      if (!lane) throw new Error("Could not create the import lane");
+
+      const form = new FormData();
+      form.append("file", file);
+      form.append("laneId", lane.id);
+      form.append("startBeats", String(playheadBeats));
+      const response = await fetch(`/api/projects/${projectId}/assets`, { method: "POST", body: form });
+      if (!response.ok) {
+        const body = (await response.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(body?.error ?? `Upload failed (${response.status})`);
+      }
+      await loadProject(projectId);
+      close();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Upload failed");
+    } finally {
+      setUploading(false);
+      if (fileInput.current) fileInput.current.value = "";
+    }
   }
 
   return (
@@ -62,8 +87,11 @@ export function AddLaneDrawer() {
             <li key={src.kind}>
               <button
                 type="button"
-                disabled={blocked}
-                onClick={() => void add(src.kind)}
+                disabled={blocked || uploading}
+                onClick={() => {
+                  if (src.kind === "import") fileInput.current?.click();
+                  else void add(src.kind);
+                }}
                 className="w-full rounded-md border border-line bg-rail px-4 py-3 text-left hover:border-brass/50 disabled:opacity-40"
               >
                 <div className="font-semibold">{src.title}</div>
@@ -74,9 +102,11 @@ export function AddLaneDrawer() {
         })}
       </ul>
       <label className="mt-6 block rounded-md border border-dashed border-line px-4 py-6 text-center text-sm text-mute hover:border-brass">
-        Import audio file
+        {uploading ? "Importing…" : "Import audio file"}
         <input
+          ref={fileInput}
           type="file"
+          disabled={uploading}
           accept="audio/wav,audio/mpeg,audio/flac,audio/ogg,audio/mp4,audio/x-m4a,.wav,.mp3,.flac,.ogg,.m4a"
           className="hidden"
           onChange={(e) => {
@@ -85,6 +115,7 @@ export function AddLaneDrawer() {
           }}
         />
       </label>
+      {error && <p className="mt-3 font-mono text-xs text-ember">{error}</p>}
     </aside>
   );
 }
