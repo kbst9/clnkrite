@@ -1,7 +1,8 @@
 import { create } from "zustand";
 import type { CreateJobInput, Job } from "@shared/types";
 import { isTerminalJobStatus } from "@shared/jobs";
-import { api } from "../lib/api";
+import { ApiError, api } from "../lib/api";
+import { useUiStore } from "./uiStore";
 import { useProjectStore } from "./projectStore";
 
 interface JobState {
@@ -75,7 +76,10 @@ export const useJobStore = create<JobState>((set, get) => ({
           if (projectId) void useProjectStore.getState().loadProject(projectId);
         }
         return job;
-      } catch {
+      } catch (err) {
+        if (err instanceof ApiError && (err.code === "bridge_offline" || err.status === 503)) {
+          useUiStore.getState().setBridge(false, "bridge_offline");
+        }
         return null;
       } finally {
         inFlightPolls.delete(id);

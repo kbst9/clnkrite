@@ -1,6 +1,9 @@
 import { create } from "zustand";
+import { copyClip, cropClip, moveClip, nudgeClip, setFades, slipClip, splitClip } from "@shared/clipOps";
 import { newId } from "@shared/ids";
+import { defaultSynthConfig, stringifySynthPattern } from "@shared/synth";
 import type {
+  Clip,
   CreateLaneInput,
   CreateProjectInput,
   Lane,
@@ -11,7 +14,9 @@ import type {
   ProjectSummary,
 } from "@shared/types";
 import { LANE_KIND_NAMES } from "@shared/types";
+import { toneEngine } from "../engine/toneEngine";
 import { api } from "../lib/api";
+import { undoStack } from "../lib/undo";
 import { attachFlushListeners, WriteQueue } from "../lib/writeQueue";
 
 const queue = new WriteQueue(500);
@@ -43,6 +48,19 @@ interface ProjectState {
   removeLane: (id: string) => void;
   replaceDoc: (doc: ProjectDocument) => void;
   flush: () => Promise<void>;
+  assetDuration: (assetId: string | null) => number | null;
+  patchClip: (id: string, patch: Partial<Clip>, recordUndo?: boolean) => void;
+  addClip: (clip: Clip, recordUndo?: boolean) => void;
+  removeClips: (ids: string[], recordUndo?: boolean) => void;
+  moveClips: (ids: string[], deltaBeats: number, grid: number, bypassSnap: boolean, recordUndo?: boolean) => void;
+  cropClipEdge: (id: string, edge: "start" | "end", beats: number, grid: number, bypassSnap: boolean, recordUndo?: boolean) => void;
+  slipClipCue: (id: string, cueInSec: number, recordUndo?: boolean) => void;
+  fadeClip: (id: string, fadeInSec: number, fadeOutSec: number, recordUndo?: boolean) => void;
+  nudgeSelected: (ids: string[], direction: -1 | 1, grid: number) => void;
+  splitAt: (ids: string[], atBeats: number) => void;
+  copyClips: (ids: string[]) => Clip[];
+  pasteClips: (clips: Clip[], startBeats: number, laneId?: string) => void;
+  addSynthPattern: (laneId: string, startBeats: number, lengthBeats?: number) => Clip | null;
 }
 
 export const useProjectStore = create<ProjectState>((set, get) => ({
@@ -138,7 +156,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       visible: true,
       parentLaneId: null,
       stemRole: null,
-      synthConfig: null,
+      synthConfig: input.kind === "synth" ? JSON.stringify(defaultSynthConfig()) : null,
       createdAt: t,
       updatedAt: t,
     };
@@ -221,4 +239,219 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   replaceDoc: (doc) => set({ doc }),
   flush: () => queue.flush(),
+
+  assetDuration: (assetId) => {
+    if (!assetId) return null;
+    return get().doc?.assets.find((asset) => asset.id === assetId)?.durationSec ?? null;
+  },
+
+  patchClip: (id, patch, recordUndo = true) => {
+    const doc = get().doc;
+    if (!doc) return;
+    const prev = doc.clips.find((clip) => clip.id === id);
+    if (!prev) return;
+    const next = { ...prev, ...patch, updatedAt: Date.now() };
+    set({ doc: { ...doc, clips: doc.clips.map((clip) => (clip.id === id ? next : clip)) } });
+    toneEngine.invalidateSchedule();
+    queue.enqueue({
+      id: `clip:${id}`,
+      run: async (init) => {
+        await api(`/api/clips/${id}`, { method: "PATCH", body: JSON.stringify(patch), ...init });
+      },
+    });
+    if (recordUndo) {
+      undoStack.push({
+        label: "edit clip",
+        undo: () => get().patchClip(id, prev, false),
+        redo: () => get().patchClip(id, patch, false),
+      });
+    }
+  },
+
+  addClip: (clip, recordUndo = true) => {
+    const doc = get().doc;
+    if (!doc) return;
+    set({ doc: { ...doc, clips: [...doc.clips, clip] } });
+    toneEngine.invalidateSchedule();
+    queue.enqueue({
+      id: `clip-add:${clip.id}`,
+      run: async (init) => {
+        await api(`/api/lanes/${clip.laneId}/clips`, { method: "POST", body: JSON.stringify(clip), ...init });
+      },
+    });
+    if (recordUndo) {
+      undoStack.push({
+        label: "add clip",
+        undo: () => get().removeClips([clip.id], false),
+        redo: () => get().addClip(clip, false),
+      });
+    }
+  },
+
+  removeClips: (ids, recordUndo = true) => {
+    const doc = get().doc;
+    if (!doc) return;
+    const removed = doc.clips.filter((clip) => ids.includes(clip.id));
+    if (removed.length === 0) return;
+    set({ doc: { ...doc, clips: doc.clips.filter((clip) => !ids.includes(clip.id)) } });
+    toneEngine.invalidateSchedule();
+    for (const id of ids) {
+      queue.enqueue({
+        id: `clip-del:${id}`,
+        run: async (init) => {
+          await api(`/api/clips/${id}`, { method: "DELETE", ...init });
+        },
+      });
+    }
+    if (recordUndo) {
+      undoStack.push({
+        label: "delete clips",
+        undo: () => {
+          for (const clip of removed) get().addClip(clip, false);
+        },
+        redo: () => get().removeClips(ids, false),
+      });
+    }
+  },
+
+  moveClips: (ids, deltaBeats, grid, bypassSnap, recordUndo = true) => {
+    const doc = get().doc;
+    if (!doc) return;
+    const before = doc.clips.filter((clip) => ids.includes(clip.id));
+    const after = before.map((clip) => moveClip(clip, clip.startBeats + deltaBeats, grid, bypassSnap));
+    set({
+      doc: {
+        ...doc,
+        clips: doc.clips.map((clip) => after.find((item) => item.id === clip.id) ?? clip),
+      },
+    });
+    toneEngine.invalidateSchedule();
+    for (const clip of after) {
+      queue.enqueue({
+        id: `clip:${clip.id}`,
+        run: async (init) => {
+          await api(`/api/clips/${clip.id}`, {
+            method: "PATCH",
+            body: JSON.stringify({ startBeats: clip.startBeats }),
+            ...init,
+          });
+        },
+      });
+    }
+    if (recordUndo) {
+      undoStack.push({
+        label: "move",
+        undo: () => {
+          for (const clip of before) get().patchClip(clip.id, { startBeats: clip.startBeats }, false);
+        },
+        redo: () => {
+          for (const clip of after) get().patchClip(clip.id, { startBeats: clip.startBeats }, false);
+        },
+      });
+    }
+  },
+
+  cropClipEdge: (id, edge, beats, grid, bypassSnap, recordUndo = true) => {
+    const doc = get().doc;
+    if (!doc) return;
+    const clip = doc.clips.find((item) => item.id === id);
+    if (!clip) return;
+    const next = cropClip(clip, edge, beats, doc.project.bpm, get().assetDuration(clip.assetId), grid, bypassSnap);
+    get().patchClip(id, {
+      startBeats: next.startBeats,
+      lengthBeats: next.lengthBeats,
+      cueInSec: next.cueInSec,
+    }, recordUndo);
+  },
+
+  slipClipCue: (id, cueInSec, recordUndo = true) => {
+    const doc = get().doc;
+    if (!doc) return;
+    const clip = doc.clips.find((item) => item.id === id);
+    if (!clip) return;
+    const next = slipClip(clip, cueInSec, doc.project.bpm, get().assetDuration(clip.assetId));
+    get().patchClip(id, { cueInSec: next.cueInSec }, recordUndo);
+  },
+
+  fadeClip: (id, fadeInSec, fadeOutSec, recordUndo = true) => {
+    const clip = get().doc?.clips.find((item) => item.id === id);
+    if (!clip) return;
+    const next = setFades(clip, fadeInSec, fadeOutSec);
+    get().patchClip(id, { fadeInSec: next.fadeInSec, fadeOutSec: next.fadeOutSec }, recordUndo);
+  },
+
+  nudgeSelected: (ids, direction, grid) => {
+    const doc = get().doc;
+    if (!doc) return;
+    for (const id of ids) {
+      const clip = doc.clips.find((item) => item.id === id);
+      if (!clip) continue;
+      const next = nudgeClip(clip, direction, grid);
+      get().patchClip(id, { startBeats: next.startBeats });
+    }
+  },
+
+  splitAt: (ids, atBeats) => {
+    const doc = get().doc;
+    if (!doc) return;
+    for (const id of ids) {
+      const clip = get().doc?.clips.find((item) => item.id === id);
+      if (!clip) continue;
+      const split = splitClip(clip, atBeats, doc.project.bpm, newId());
+      if (!split) continue;
+      const [left, right] = split;
+      get().patchClip(id, { lengthBeats: left.lengthBeats }, false);
+      get().addClip(right, false);
+      undoStack.push({
+        label: "split",
+        undo: () => {
+          get().removeClips([right.id], false);
+          get().patchClip(id, { lengthBeats: clip.lengthBeats }, false);
+        },
+        redo: () => {
+          get().patchClip(id, { lengthBeats: left.lengthBeats }, false);
+          get().addClip(right, false);
+        },
+      });
+    }
+  },
+
+  copyClips: (ids) => {
+    const doc = get().doc;
+    if (!doc) return [];
+    return doc.clips.filter((clip) => ids.includes(clip.id));
+  },
+
+  pasteClips: (clips, startBeats, laneId) => {
+    if (clips.length === 0) return;
+    const origin = Math.min(...clips.map((clip) => clip.startBeats));
+    for (const clip of clips) {
+      const next = copyClip(clip, newId(), startBeats + (clip.startBeats - origin));
+      if (laneId) next.laneId = laneId;
+      get().addClip(next);
+    }
+  },
+
+  addSynthPattern: (laneId, startBeats, lengthBeats = 16) => {
+    const doc = get().doc;
+    if (!doc) return null;
+    const t = Date.now();
+    const clip: Clip = {
+      id: newId(),
+      laneId,
+      assetId: null,
+      startBeats,
+      lengthBeats,
+      cueInSec: 0,
+      fadeInSec: 0,
+      fadeOutSec: 0,
+      gainDb: 0,
+      synthPattern: stringifySynthPattern([]),
+      label: "pattern",
+      createdAt: t,
+      updatedAt: t,
+    };
+    get().addClip(clip);
+    return clip;
+  },
 }));

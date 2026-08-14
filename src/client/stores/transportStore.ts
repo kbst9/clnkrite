@@ -7,6 +7,8 @@ interface TransportState {
   playheadBeats: number;
   loop: boolean;
   selectedLaneIds: string[];
+  toggleLaneSelected: (id: string, additive?: boolean) => void;
+  clearLaneSelection: () => void;
   setPlayhead: (beats: number, bpm?: number) => void;
   toggleLoop: () => void;
   play: (bpm: number, loopStart: number | null, loopEnd: number | null) => Promise<void>;
@@ -19,6 +21,17 @@ export const useTransportStore = create<TransportState>((set, get) => ({
   playheadBeats: 0,
   loop: false,
   selectedLaneIds: [],
+  toggleLaneSelected: (id, additive = false) => {
+    const current = get().selectedLaneIds;
+    if (!additive) {
+      set({ selectedLaneIds: current.length === 1 && current[0] === id ? [] : [id] });
+      return;
+    }
+    set({
+      selectedLaneIds: current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
+    });
+  },
+  clearLaneSelection: () => set({ selectedLaneIds: [] }),
   setPlayhead: (beats, bpm = 120) => {
     set({ playheadBeats: Math.max(0, beats) });
     toneEngine.seekSeconds(beatsToSec(Math.max(0, beats), bpm));
