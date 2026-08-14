@@ -148,6 +148,7 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
     let mime = "application/octet-stream";
     let laneId: string | undefined;
     let startBeats = 0;
+    let suppliedDurationSec: number | null = null;
     let filename = "import";
 
     if (contentType.includes("multipart/form-data")) {
@@ -159,11 +160,17 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
       filename = file.name || filename;
       if (typeof form.laneId === "string") laneId = form.laneId;
       if (typeof form.startBeats === "string") startBeats = Number(form.startBeats) || 0;
+      if (typeof form.durationSec === "string") {
+        const value = Number(form.durationSec);
+        if (Number.isFinite(value) && value > 0) suppliedDurationSec = value;
+      }
     } else {
       bytes = await c.req.arrayBuffer();
       mime = contentType.split(";")[0]?.trim() || mime;
       laneId = c.req.query("laneId") ?? undefined;
       startBeats = Number(c.req.query("startBeats") ?? 0) || 0;
+      const value = Number(c.req.query("durationSec"));
+      if (Number.isFinite(value) && value > 0) suppliedDurationSec = value;
     }
 
     const isVideo = (VIDEO_MIME_ALLOWLIST as readonly string[]).includes(mime);
@@ -189,6 +196,7 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
       : `projects/${projectId}/audio/${assetId}.${ext}`;
     await c.env.MEDIA.put(r2Key, bytes, { httpMetadata: { contentType: mime } });
     const wav = isAudio ? parseWavHeader(bytes) : null;
+    const durationSec = wav?.durationSec ?? suppliedDurationSec;
     const t = Date.now();
     const asset = await store.createAsset({
       id: assetId,
@@ -197,7 +205,7 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
       r2Key,
       mime,
       bytes: bytes.byteLength,
-      durationSec: wav?.durationSec ?? null,
+      durationSec,
       sampleRate: wav?.sampleRate ?? null,
       channels: wav?.channels ?? null,
       source: isVideo ? "video" : "import",
@@ -210,8 +218,7 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
       laneId: lane.id,
       assetId: asset.id,
       startBeats,
-      // Non-WAV or unparsable uploads keep the documented 16-beat M3 fallback.
-      lengthBeats: wav ? secToBeats(wav.durationSec, project.bpm) : 16,
+      lengthBeats: durationSec != null ? secToBeats(durationSec, project.bpm) : 16,
       cueInSec: 0,
       fadeInSec: 0,
       fadeOutSec: 0,
