@@ -92,6 +92,7 @@ export interface AceStepJobParams {
 
 export interface DemucsJobParams {
   sourceAssetId: string;
+  sourceClipId?: string;
   playheadBeats: number;
 }
 
@@ -149,10 +150,29 @@ export interface PatchProjectInput {
   loopEndBeats?: number | null;
 }
 
+export type SynthType = "PolySynth" | "MonoSynth" | "FMSynth" | "MembraneSynth";
+
+export interface SynthNote {
+  timeBeats: number;
+  note: string;
+  durBeats: number;
+  vel: number;
+}
+
+export interface SynthConfig {
+  type: SynthType;
+}
+
 export interface CreateLaneInput {
   kind: LaneKind;
   name?: string;
   arm?: boolean;
+  id?: string;
+  parentLaneId?: string | null;
+  stemRole?: StemRole | null;
+  synthConfig?: string | null;
+  muted?: boolean;
+  sortOrder?: number;
 }
 
 export interface PatchLaneInput {
@@ -165,6 +185,38 @@ export interface PatchLaneInput {
   armed?: boolean;
   visible?: boolean;
   synthConfig?: string | null;
+  parentLaneId?: string | null;
+  stemRole?: StemRole | null;
+}
+
+export interface CreateClipInput {
+  id?: string;
+  laneId?: string;
+  assetId?: string | null;
+  startBeats: number;
+  lengthBeats: number;
+  cueInSec?: number;
+  fadeInSec?: number;
+  fadeOutSec?: number;
+  gainDb?: number;
+  synthPattern?: string | null;
+  label?: string | null;
+}
+
+export interface PatchClipInput {
+  laneId?: string;
+  startBeats?: number;
+  lengthBeats?: number;
+  cueInSec?: number;
+  fadeInSec?: number;
+  fadeOutSec?: number;
+  gainDb?: number;
+  synthPattern?: string | null;
+  label?: string | null;
+}
+
+export interface SplitClipInput {
+  atBeats: number;
 }
 
 export interface CreateJobInput {
@@ -229,5 +281,13 @@ export const AUDIO_MIME_ALLOWLIST = [
   "audio/webm",
 ] as const;
 
+export const VIDEO_MIME_ALLOWLIST = [
+  "video/mp4",
+  "video/webm",
+  "video/quicktime",
+] as const;
+
 export const MAX_AUDIO_BYTES = 128 * 1024 * 1024;
 export const MAX_VIDEO_BYTES = 512 * 1024 * 1024;
+
+export const STEM_ROLES: StemRole[] = ["vocals", "drums", "bass", "other"];
