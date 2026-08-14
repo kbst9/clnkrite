@@ -6,7 +6,7 @@ export type QueuedWrite = {
 export class WriteQueue {
   private items: QueuedWrite[] = [];
   private timer: ReturnType<typeof setTimeout> | null = null;
-  private flushing = false;
+  private flushPromise: Promise<void> | null = null;
   readonly delayMs: number;
 
   constructor(delayMs = 500) {
@@ -26,24 +26,42 @@ export class WriteQueue {
     }, this.delayMs);
   }
 
-  async flush(init?: RequestInit): Promise<void> {
+  flush(init?: RequestInit): Promise<void> {
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
     }
-    if (this.flushing) return;
-    this.flushing = true;
-    const batch = this.items.splice(0, this.items.length);
-    try {
+    if (this.flushPromise) return this.flushPromise;
+
+    this.flushPromise = this.drain(init).finally(() => {
+      this.flushPromise = null;
+      if (this.items.length > 0) {
+        this.schedule();
+      } else if (this.timer) {
+        clearTimeout(this.timer);
+        this.timer = null;
+      }
+    });
+    return this.flushPromise;
+  }
+
+  private async drain(init?: RequestInit): Promise<void> {
+    const failed = new Map<string, QueuedWrite>();
+    while (this.items.length > 0) {
+      const batch = this.items.splice(0, this.items.length);
       for (const item of batch) {
         try {
           await item.run(init);
+          failed.delete(item.id);
         } catch (err) {
           console.error("write queue failed", item.id, err);
+          failed.set(item.id, item);
         }
       }
-    } finally {
-      this.flushing = false;
+    }
+
+    for (const item of failed.values()) {
+      if (!this.items.some((queued) => queued.id === item.id)) this.items.push(item);
     }
   }
 
