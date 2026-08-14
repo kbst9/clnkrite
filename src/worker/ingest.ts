@@ -98,17 +98,54 @@ async function finishDemucs(store: Store, job: Job, assets: Asset[]): Promise<Jo
       sourceClip,
       artifacts,
     });
+    const doc = await store.getDocument(job.projectId);
+    const oldChildren = doc?.lanes.filter((lane) => lane.parentLaneId === parentLane.id) ?? [];
+    const plannedIds = new Set(plan.lanes.map((lane) => lane.id));
+    for (const child of oldChildren) {
+      for (const clip of doc?.clips.filter((item) => item.laneId === child.id) ?? []) {
+        await store.deleteClip(clip.id);
+      }
+      if (!plannedIds.has(child.id)) await store.deleteLane(child.id);
+    }
+
+    const ordinary = (doc?.lanes ?? [])
+      .filter((lane) => lane.parentLaneId !== parentLane.id)
+      .sort((a, b) => a.sortOrder - b.sortOrder);
+    const parentIndex = ordinary.findIndex((lane) => lane.id === parentLane.id);
+    const insertAt = parentIndex < 0 ? ordinary.length : parentIndex + 1;
+    const ordered = [
+      ...ordinary.slice(0, insertAt),
+      ...plan.lanes,
+      ...ordinary.slice(insertAt),
+    ];
+    for (const [sortOrder, lane] of ordered.entries()) {
+      if (plannedIds.has(lane.id)) continue;
+      if (lane.sortOrder !== sortOrder) await store.updateLane(lane.id, { sortOrder });
+    }
     for (const lane of plan.lanes) {
-      await store.createLane(job.projectId, {
-        id: lane.id,
-        kind: lane.kind,
-        name: lane.name,
-        arm: false,
-        parentLaneId: lane.parentLaneId,
-        stemRole: lane.stemRole,
-        muted: lane.muted,
-        sortOrder: lane.sortOrder,
-      });
+      const sortOrder = ordered.findIndex((item) => item.id === lane.id);
+      const existing = await store.getLane(lane.id);
+      if (existing) {
+        await store.updateLane(lane.id, {
+          name: lane.name,
+          sortOrder,
+          muted: false,
+          visible: true,
+          parentLaneId: parentLane.id,
+          stemRole: lane.stemRole,
+        });
+      } else {
+        await store.createLane(job.projectId, {
+          id: lane.id,
+          kind: lane.kind,
+          name: lane.name,
+          arm: false,
+          parentLaneId: lane.parentLaneId,
+          stemRole: lane.stemRole,
+          muted: lane.muted,
+          sortOrder,
+        });
+      }
     }
     for (const clip of plan.clips) await store.createClip(clip);
     if (plan.muteParent) await store.updateLane(parentLane.id, { muted: true });

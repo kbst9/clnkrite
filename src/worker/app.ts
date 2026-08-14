@@ -61,6 +61,22 @@ function guessExt(mime: string): string {
   return "wav";
 }
 
+function byteRange(value: string, size: number): { start: number; end: number } | null {
+  const match = /^bytes=(\d*)-(\d*)$/.exec(value.trim());
+  if (!match || size <= 0 || (!match[1] && !match[2])) return null;
+  if (!match[1]) {
+    const suffix = Number(match[2]);
+    if (!Number.isSafeInteger(suffix) || suffix <= 0) return null;
+    return { start: Math.max(0, size - suffix), end: size - 1 };
+  }
+  const start = Number(match[1]);
+  const requestedEnd = match[2] ? Number(match[2]) : size - 1;
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(requestedEnd) || start >= size || requestedEnd < start) {
+    return null;
+  }
+  return { start, end: Math.min(requestedEnd, size - 1) };
+}
+
 export function createApp(options: AppOptions = {}): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   const factory = options.storeFactory ?? ((env: Env) => createD1Store(env.DB));
@@ -222,16 +238,17 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
     if (etag) headers.set("ETag", etag);
 
     if (range) {
-      const match = range.match(/bytes=(\d+)-(\d*)/);
-      if (match) {
-        const start = Number(match[1]);
-        const end = match[2] ? Number(match[2]) : asset.bytes - 1;
-        const sliced = await c.env.MEDIA.get(asset.r2Key, { range: { offset: start, length: end - start + 1 } });
-        if (!sliced) return jsonError(c, 404, "blob_missing");
-        headers.set("Content-Range", `bytes ${start}-${end}/${asset.bytes}`);
-        headers.set("Content-Length", String(end - start + 1));
-        return new Response(sliced.body, { status: 206, headers });
+      const parsed = byteRange(range, asset.bytes);
+      if (!parsed) {
+        headers.set("Content-Range", `bytes */${asset.bytes}`);
+        return new Response(null, { status: 416, headers });
       }
+      const { start, end } = parsed;
+      const sliced = await c.env.MEDIA.get(asset.r2Key, { range: { offset: start, length: end - start + 1 } });
+      if (!sliced) return jsonError(c, 404, "blob_missing");
+      headers.set("Content-Range", `bytes ${start}-${end}/${asset.bytes}`);
+      headers.set("Content-Length", String(end - start + 1));
+      return new Response(sliced.body, { status: 206, headers });
     }
     headers.set("Content-Length", String(asset.bytes));
     return new Response(obj.body, { status: 200, headers });
@@ -261,6 +278,8 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
       const lane = await store.getLane(body.laneId);
       if (!lane || lane.projectId !== projectId) return jsonError(c, 400, "lane_not_found");
       if (!lane.armed) return jsonError(c, 400, "lane_not_armed");
+      if (body.kind === "music3_generate" && lane.kind !== "music3") return jsonError(c, 400, "lane_kind_mismatch");
+      if (body.kind === "acestep_generate" && lane.kind !== "acestep") return jsonError(c, 400, "lane_kind_mismatch");
     }
 
     if (body.kind === "demucs_split") {
@@ -271,10 +290,15 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
       if (asset.source !== "music3" && asset.source !== "acestep") {
         return jsonError(c, 400, "source_not_generated");
       }
-      if (!body.laneId) {
-        const clips = await store.listClipsByAssetId(asset.id);
-        body.laneId = clips[0]?.laneId;
-      }
+      const clips = await store.listClipsByAssetId(asset.id);
+      const sourceClip = params.sourceClipId
+        ? clips.find((clip) => clip.id === params.sourceClipId)
+        : clips[0];
+      if (!sourceClip) return jsonError(c, 400, "source_clip_not_found");
+      const sourceLane = await store.getLane(sourceClip.laneId);
+      if (!sourceLane || sourceLane.projectId !== projectId) return jsonError(c, 400, "source_clip_not_found");
+      body.laneId = sourceClip.laneId;
+      body.params = { ...params, sourceClipId: sourceClip.id };
     }
 
     const t = Date.now();
@@ -303,15 +327,19 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
       if (job.kind === "demucs_split" && job.bridgeJobId) {
         const params = job.params as DemucsJobParams;
         const source = await store.getAsset(params.sourceAssetId);
-        if (source) {
-          const obj = await c.env.MEDIA.get(source.r2Key);
-          if (obj) {
-            const buf = await obj.arrayBuffer();
-            await bridgePutJobSource(c.env, job.bridgeJobId, buf);
-          }
-        }
+        if (!source) throw new Error("source_asset_missing");
+        const obj = await c.env.MEDIA.get(source.r2Key);
+        if (!obj) throw new Error("source_blob_missing");
+        await bridgePutJobSource(c.env, job.bridgeJobId, obj.body);
       }
     } catch (err) {
+      if (job.bridgeJobId) {
+        try {
+          await bridgeCancelJob(c.env, job.bridgeJobId);
+        } catch {
+          // The D1 failure is authoritative even if the orphaned bridge job cannot be cancelled.
+        }
+      }
       const offline = err instanceof BridgeOfflineError;
       job =
         (await store.updateJob(job.id, {
@@ -338,7 +366,8 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
           // This update is the queued-to-running timestamp used by the timeout guard.
           job = (await store.updateJob(job.id, { status: "running" })) ?? job;
         } else {
-          const durationSec = Number((job.params as Music3JobParams).durationSec ?? 60);
+          const params = job.params as Music3JobParams & { audioDuration?: number };
+          const durationSec = Number(params.durationSec ?? params.audioDuration ?? 60);
           if (jobTimedOut(job.updatedAt, durationSec)) {
             try {
               await bridgeCancelJob(c.env, job.bridgeJobId);

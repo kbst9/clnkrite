@@ -76,12 +76,12 @@ export async function bridgeGetArtifact(env: Env, bridgeJobId: string, name: str
   return res.arrayBuffer();
 }
 
-export async function bridgePutJobSource(env: Env, bridgeJobId: string, bytes: ArrayBuffer): Promise<void> {
+export async function bridgePutJobSource(env: Env, bridgeJobId: string, bytes: BodyInit): Promise<void> {
   const res = await bridgeFetch(
     env,
     `/jobs/${bridgeJobId}/source`,
     { method: "POST", headers: { "Content-Type": "audio/wav" }, body: bytes },
-    60_000,
+    300_000,
   );
   if (!res.ok) throw new BridgeOfflineError();
 }
