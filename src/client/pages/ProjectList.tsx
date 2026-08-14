@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { BridgeBanner } from "../components/BridgeBanner";
 import { useProjectStore } from "../stores/projectStore";
 
 export function ProjectList() {
@@ -19,6 +20,8 @@ export function ProjectList() {
   }
 
   return (
+    <div className="flex min-h-full flex-col">
+      <BridgeBanner />
     <div className="mx-auto flex min-h-full max-w-3xl flex-col px-6 py-16">
       <p className="font-mono text-[11px] uppercase tracking-[0.35em] text-brass">clnkrite</p>
       <h1 className="mt-2 text-5xl font-semibold tracking-tight">The desk</h1>
@@ -48,6 +51,9 @@ export function ProjectList() {
       </form>
       {loading && <p className="mt-8 font-mono text-sm text-mute">Loading…</p>}
       {error && <p className="mt-8 font-mono text-sm text-ember">{error}</p>}
+      {!loading && list.length === 0 && (
+        <p className="mt-8 font-mono text-sm text-mute">No sessions yet. Name one and start a reel.</p>
+      )}
       <ul className="mt-8 divide-y divide-line border-y border-line">
         {list.map((p) => (
           <li key={p.id}>
@@ -67,6 +73,7 @@ export function ProjectList() {
       <p className="mt-auto pt-12 font-mono text-[10px] text-mute">
         AGPL-3.0-or-later · source offered in this repository
       </p>
+    </div>
     </div>
   );
 }
