@@ -1,0 +1,365 @@
+import { Hono } from "hono";
+import { newId } from "@shared/ids";
+import { jobTimedOut, mapBridgeStatus, isTerminalJobStatus } from "@shared/jobs";
+import type {
+  CreateJobInput,
+  CreateLaneInput,
+  CreateProjectInput,
+  EnginesResponse,
+  Job,
+  Music3JobParams,
+  PatchLaneInput,
+  PatchProjectInput,
+} from "@shared/types";
+import { AUDIO_MIME_ALLOWLIST, MAX_AUDIO_BYTES } from "@shared/types";
+import {
+  BridgeOfflineError,
+  bridgeCancelJob,
+  bridgeCreateJob,
+  bridgeGetJob,
+  bridgeHealth,
+} from "./bridge";
+import type { Env } from "./env";
+import { ingestSucceededJob } from "./ingest";
+import { createD1Store, type Store } from "./store";
+
+export type AppEnv = {
+  Bindings: Env;
+  Variables: { store: Store };
+};
+
+export interface AppOptions {
+  storeFactory?: (env: Env) => Store;
+}
+
+function jsonError(c: { json: (o: unknown, s?: number) => Response }, status: number, error: string) {
+  return c.json({ error }, status);
+}
+
+function guessExt(mime: string): string {
+  if (mime.includes("mpeg") || mime.includes("mp3")) return "mp3";
+  if (mime.includes("flac")) return "flac";
+  if (mime.includes("ogg")) return "ogg";
+  if (mime.includes("mp4") || mime.includes("m4a")) return "m4a";
+  if (mime.includes("aac")) return "aac";
+  return "wav";
+}
+
+export function createApp(options: AppOptions = {}): Hono<AppEnv> {
+  const app = new Hono<AppEnv>();
+  const factory = options.storeFactory ?? ((env: Env) => createD1Store(env.DB));
+
+  app.use("/api/*", async (c, next) => {
+    c.set("store", factory(c.env));
+    await next();
+  });
+
+  app.get("/api/projects", async (c) => {
+    const list = await c.get("store").listProjects();
+    return c.json(list);
+  });
+
+  app.post("/api/projects", async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as CreateProjectInput;
+    const project = await c.get("store").createProject(body);
+    return c.json(project, 201);
+  });
+
+  app.get("/api/projects/:id", async (c) => {
+    const doc = await c.get("store").getDocument(c.req.param("id"));
+    if (!doc) return jsonError(c, 404, "not_found");
+    return c.json(doc);
+  });
+
+  app.patch("/api/projects/:id", async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as PatchProjectInput;
+    const project = await c.get("store").updateProject(c.req.param("id"), body);
+    if (!project) return jsonError(c, 404, "not_found");
+    return c.json(project);
+  });
+
+  app.delete("/api/projects/:id", async (c) => {
+    const ok = await c.get("store").deleteProject(c.req.param("id"));
+    if (!ok) return jsonError(c, 404, "not_found");
+    return c.json({ ok: true });
+  });
+
+  app.post("/api/projects/:id/lanes", async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as CreateLaneInput;
+    if (!body.kind) return jsonError(c, 400, "kind_required");
+    const lane = await c.get("store").createLane(c.req.param("id"), body);
+    if (!lane) return jsonError(c, 404, "not_found");
+    return c.json(lane, 201);
+  });
+
+  app.patch("/api/lanes/:id", async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as PatchLaneInput;
+    const lane = await c.get("store").updateLane(c.req.param("id"), body);
+    if (!lane) return jsonError(c, 404, "not_found");
+    return c.json(lane);
+  });
+
+  app.delete("/api/lanes/:id", async (c) => {
+    const ok = await c.get("store").deleteLane(c.req.param("id"));
+    if (!ok) return jsonError(c, 404, "not_found");
+    return c.json({ ok: true });
+  });
+
+  app.post("/api/projects/:id/assets", async (c) => {
+    const store = c.get("store");
+    const projectId = c.req.param("id");
+    const project = await store.getProject(projectId);
+    if (!project) return jsonError(c, 404, "not_found");
+
+    const contentType = c.req.header("content-type") ?? "";
+    let bytes: ArrayBuffer;
+    let mime = "application/octet-stream";
+    let laneId: string | undefined;
+    let startBeats = 0;
+    let filename = "import";
+
+    if (contentType.includes("multipart/form-data")) {
+      const form = await c.req.parseBody();
+      const file = form.file;
+      if (!(file instanceof File)) return jsonError(c, 400, "file_required");
+      bytes = await file.arrayBuffer();
+      mime = file.type || "application/octet-stream";
+      filename = file.name || filename;
+      if (typeof form.laneId === "string") laneId = form.laneId;
+      if (typeof form.startBeats === "string") startBeats = Number(form.startBeats) || 0;
+    } else {
+      bytes = await c.req.arrayBuffer();
+      mime = contentType.split(";")[0]?.trim() || mime;
+      laneId = c.req.query("laneId") ?? undefined;
+      startBeats = Number(c.req.query("startBeats") ?? 0) || 0;
+    }
+
+    if (!(AUDIO_MIME_ALLOWLIST as readonly string[]).includes(mime)) {
+      return jsonError(c, 415, "mime_not_allowed");
+    }
+    if (bytes.byteLength > MAX_AUDIO_BYTES) return jsonError(c, 413, "too_large");
+
+    let lane = laneId ? await store.getLane(laneId) : null;
+    if (lane && lane.projectId !== projectId) return jsonError(c, 400, "lane_mismatch");
+    if (!lane) {
+      lane = await store.createLane(projectId, { kind: "import", name: "Import" });
+    }
+    if (!lane) return jsonError(c, 500, "lane_create_failed");
+
+    const assetId = newId();
+    const ext = guessExt(mime);
+    const r2Key = `projects/${projectId}/audio/${assetId}.${ext}`;
+    await c.env.MEDIA.put(r2Key, bytes, { httpMetadata: { contentType: mime } });
+    const t = Date.now();
+    const asset = await store.createAsset({
+      id: assetId,
+      projectId,
+      kind: "audio",
+      r2Key,
+      mime,
+      bytes: bytes.byteLength,
+      durationSec: null,
+      sampleRate: null,
+      channels: null,
+      source: "import",
+      sourceJobId: null,
+      peaksR2Key: null,
+      createdAt: t,
+    });
+    const clip = await store.createClip({
+      id: newId(),
+      laneId: lane.id,
+      assetId: asset.id,
+      startBeats,
+      lengthBeats: 16,
+      cueInSec: 0,
+      fadeInSec: 0,
+      fadeOutSec: 0,
+      gainDb: 0,
+      synthPattern: null,
+      label: filename,
+      createdAt: t,
+      updatedAt: t,
+    });
+    return c.json({ asset, clip, lane }, 201);
+  });
+
+  app.get("/api/assets/:id/blob", async (c) => {
+    const asset = await c.get("store").getAsset(c.req.param("id"));
+    if (!asset) return jsonError(c, 404, "not_found");
+    const obj = await c.env.MEDIA.get(asset.r2Key);
+    if (!obj) return jsonError(c, 404, "blob_missing");
+
+    const etag = obj.httpEtag ?? obj.etag;
+    const range = c.req.header("Range");
+    const headers = new Headers();
+    headers.set("Content-Type", asset.mime);
+    headers.set("Accept-Ranges", "bytes");
+    if (etag) headers.set("ETag", etag);
+
+    if (range) {
+      const match = range.match(/bytes=(\d+)-(\d*)/);
+      if (match) {
+        const start = Number(match[1]);
+        const end = match[2] ? Number(match[2]) : asset.bytes - 1;
+        const sliced = await c.env.MEDIA.get(asset.r2Key, { range: { offset: start, length: end - start + 1 } });
+        if (!sliced) return jsonError(c, 404, "blob_missing");
+        headers.set("Content-Range", `bytes ${start}-${end}/${asset.bytes}`);
+        headers.set("Content-Length", String(end - start + 1));
+        return new Response(sliced.body, { status: 206, headers });
+      }
+    }
+    headers.set("Content-Length", String(asset.bytes));
+    return new Response(obj.body, { status: 200, headers });
+  });
+
+  app.put("/api/assets/:id/peaks", async (c) => {
+    const store = c.get("store");
+    const asset = await store.getAsset(c.req.param("id"));
+    if (!asset) return jsonError(c, 404, "not_found");
+    const body = await c.req.arrayBuffer();
+    const peaksKey = `projects/${asset.projectId}/peaks/${asset.id}.peaks.bin`;
+    await c.env.MEDIA.put(peaksKey, body, { httpMetadata: { contentType: "application/octet-stream" } });
+    const updated = await store.updateAssetPeaks(asset.id, peaksKey);
+    return c.json(updated);
+  });
+
+  app.post("/api/projects/:id/jobs", async (c) => {
+    const store = c.get("store");
+    const projectId = c.req.param("id");
+    const project = await store.getProject(projectId);
+    if (!project) return jsonError(c, 404, "not_found");
+    const body = (await c.req.json().catch(() => ({}))) as CreateJobInput;
+    if (!body.kind) return jsonError(c, 400, "kind_required");
+
+    if (body.kind === "music3_generate" || body.kind === "acestep_generate") {
+      if (!body.laneId) return jsonError(c, 400, "lane_required");
+      const lane = await store.getLane(body.laneId);
+      if (!lane || lane.projectId !== projectId) return jsonError(c, 400, "lane_not_found");
+      if (!lane.armed) return jsonError(c, 400, "lane_not_armed");
+    }
+
+    const t = Date.now();
+    let job: Job = {
+      id: newId(),
+      projectId,
+      laneId: body.laneId ?? null,
+      kind: body.kind,
+      params: body.params ?? {},
+      status: "queued",
+      bridgeJobId: null,
+      error: null,
+      resultAssetIds: [],
+      createdAt: t,
+      updatedAt: t,
+    };
+    job = await store.createJob(job);
+
+    try {
+      const created = await bridgeCreateJob(c.env, { kind: job.kind, params: job.params });
+      job =
+        (await store.updateJob(job.id, {
+          bridgeJobId: created.jobId,
+          status: "queued",
+        })) ?? job;
+    } catch (err) {
+      const offline = err instanceof BridgeOfflineError;
+      job =
+        (await store.updateJob(job.id, {
+          status: "failed",
+          error: offline ? "bridge_offline" : err instanceof Error ? err.message : "bridge_error",
+        })) ?? job;
+    }
+    return c.json(job, 201);
+  });
+
+  app.get("/api/jobs/:id", async (c) => {
+    const store = c.get("store");
+    let job = await store.getJob(c.req.param("id"));
+    if (!job) return jsonError(c, 404, "not_found");
+    if (isTerminalJobStatus(job.status)) return c.json(job);
+
+    const durationSec = Number((job.params as Music3JobParams).durationSec ?? 60);
+    if (jobTimedOut(job.createdAt, durationSec)) {
+      job = (await store.updateJob(job.id, { status: "failed", error: "timeout" })) ?? job;
+      return c.json(job);
+    }
+
+    if (!job.bridgeJobId) return c.json(job);
+
+    try {
+      const view = await bridgeGetJob(c.env, job.bridgeJobId);
+      const mapped = mapBridgeStatus(view.status);
+      if (mapped === "ingesting") {
+        job = await ingestSucceededJob(c.env, store, job);
+      } else if (mapped === "failed" || mapped === "cancelled") {
+        job =
+          (await store.updateJob(job.id, {
+            status: mapped,
+            error: view.error ?? mapped,
+          })) ?? job;
+      } else if (mapped !== job.status) {
+        job = (await store.updateJob(job.id, { status: mapped })) ?? job;
+      }
+      return c.json({ ...job, queuePosition: view.queuePosition, progress: view.progress });
+    } catch (err) {
+      if (err instanceof BridgeOfflineError) {
+        return c.json({ error: "bridge_offline", job }, 503);
+      }
+      throw err;
+    }
+  });
+
+  app.post("/api/jobs/:id/cancel", async (c) => {
+    const store = c.get("store");
+    const job = await store.getJob(c.req.param("id"));
+    if (!job) return jsonError(c, 404, "not_found");
+    if (job.bridgeJobId) {
+      try {
+        await bridgeCancelJob(c.env, job.bridgeJobId);
+      } catch (err) {
+        if (err instanceof BridgeOfflineError) {
+          return c.json({ error: "bridge_offline" }, 503);
+        }
+      }
+    }
+    const updated = await store.updateJob(job.id, { status: "cancelled", error: "cancelled" });
+    return c.json(updated);
+  });
+
+  app.get("/api/engines", async (c) => {
+    const kvRaw = await c.env.CONFIG.get("engines", "json");
+    try {
+      const health = await bridgeHealth(c.env);
+      const kvValue = {
+        music3: {
+          model: health.music3.model,
+          maxDurationSec: 240,
+        },
+        acestep: {
+          present: Boolean(health.acestep?.up),
+          defaultSteps: 8,
+        },
+      };
+      await c.env.CONFIG.put("engines", JSON.stringify(kvValue));
+      const body: EnginesResponse = { online: true, health, kv: kvValue };
+      return c.json(body);
+    } catch {
+      const body: EnginesResponse = {
+        online: false,
+        error: "bridge_offline",
+        health: null,
+        kv: kvRaw,
+      };
+      return c.json(body, 503);
+    }
+  });
+
+  // M4–M8 stubs so the surface is typed and callable
+  app.post("/api/lanes/:id/clips", (c) => c.json({ error: "not_implemented", milestone: "M4" }, 501));
+  app.patch("/api/clips/:id", (c) => c.json({ error: "not_implemented", milestone: "M4" }, 501));
+  app.delete("/api/clips/:id", (c) => c.json({ error: "not_implemented", milestone: "M4" }, 501));
+  app.post("/api/clips/:id/split", (c) => c.json({ error: "not_implemented", milestone: "M4" }, 501));
+
+  return app;
+}
