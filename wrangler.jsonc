@@ -1,0 +1,32 @@
+{
+  "name": "clnkrite",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-08-01",
+  "assets": {
+    "directory": "./dist/client",
+    "not_found_handling": "single-page-application"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "clnkrite-db",
+      "database_id": "REPLACE_AFTER_CREATE",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MEDIA",
+      "bucket_name": "clnkrite-media"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "CONFIG",
+      "id": "REPLACE_AFTER_CREATE"
+    }
+  ],
+  "vars": {
+    "BRIDGE_BASE_URL": "https://bridge.example.com"
+  }
+}

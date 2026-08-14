@@ -1,0 +1,5 @@
+BRIDGE_BASE_URL=http://127.0.0.1:8300
+# Optional Cloudflare Access service-token headers for a deployed Worker
+# talking to the tunneled bridge. Not needed for local wrangler dev.
+# CF_ACCESS_CLIENT_ID=
+# CF_ACCESS_CLIENT_SECRET=
