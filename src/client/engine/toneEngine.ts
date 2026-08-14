@@ -1,6 +1,5 @@
 import * as Tone from "tone";
 import { beatsToSec, secToBeats } from "@shared/beats";
-import { isLaneAudible } from "@shared/mixer";
 import { parseSynthConfig, parseSynthPattern } from "@shared/synth";
 import type { Clip, Lane, ProjectDocument, SynthType } from "@shared/types";
 
@@ -25,7 +24,10 @@ class ToneEngine {
   private players = new Map<string, Tone.Player>();
   private parts = new Map<string, Tone.Part>();
   private instruments = new Map<string, Tone.PolySynth | Tone.MonoSynth | Tone.FMSynth | Tone.MembraneSynth>();
-  private scheduleKey = "";
+  private decodedBuffers = new Map<string, AudioBuffer>();
+  private scheduleKey: string | null = null;
+  private rebuildGeneration = 0;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
 
   async ensureStarted(): Promise<void> {
     if (this.started) return;
@@ -47,6 +49,7 @@ class ToneEngine {
   }
 
   applyMixer(lanes: Lane[], selectedLaneIds: string[]): void {
+    const transientSolo = selectedLaneIds.length > 0;
     for (const lane of lanes) {
       let channel = this.channels.get(lane.id);
       if (!channel) {
@@ -55,8 +58,8 @@ class ToneEngine {
       }
       channel.volume.value = lane.volumeDb;
       channel.pan.value = lane.pan;
-      channel.mute = !isLaneAudible(lane, lanes, selectedLaneIds);
-      channel.solo = false;
+      channel.mute = lane.muted;
+      channel.solo = transientSolo ? selectedLaneIds.includes(lane.id) : lane.soloed && !lane.muted;
     }
     for (const [id, channel] of this.channels) {
       if (!lanes.some((lane) => lane.id === id)) {
@@ -103,39 +106,76 @@ class ToneEngine {
           `${c.id}:${c.laneId}:${c.startBeats}:${c.lengthBeats}:${c.cueInSec}:${c.fadeInSec}:${c.fadeOutSec}:${c.assetId}:${c.synthPattern}:${c.gainDb}`,
       ),
     ].join("|");
-    if (key === this.scheduleKey && this.players.size + this.parts.size > 0) return;
-    this.scheduleKey = key;
+    if (key === this.scheduleKey) return;
+    const generation = ++this.rebuildGeneration;
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    const lanes = new Map(doc.lanes.map((lane) => [lane.id, lane]));
+    const audio = new Map<string, AudioBuffer>();
+    let failed = false;
+    for (const clip of doc.clips) {
+      const lane = lanes.get(clip.laneId);
+      if (!lane || lane.kind === "picture") continue;
+      if (!clip.synthPattern && clip.assetId) {
+        try {
+          let decoded = this.decodedBuffers.get(clip.assetId);
+          if (!decoded) {
+            const bytes = await getBuffer(clip.assetId);
+            decoded = await Tone.getContext().decodeAudioData(bytes.slice(0));
+            this.decodedBuffers.set(clip.assetId, decoded);
+          }
+          audio.set(clip.id, decoded);
+        } catch (err) {
+          failed = true;
+          console.warn("schedule player failed", clip.id, err);
+        }
+      }
+      if (generation !== this.rebuildGeneration) return;
+    }
+
+    if (generation !== this.rebuildGeneration) return;
+    const transport = Tone.getTransport();
+    const resumeBeats = secToBeats(transport.seconds, transport.bpm.value);
+    const wasPlaying = transport.state === "started";
+    if (wasPlaying) transport.pause();
     this.clearSchedule();
     this.setBpm(doc.project.bpm);
-    const lanes = new Map(doc.lanes.map((lane) => [lane.id, lane]));
     for (const clip of doc.clips) {
       const lane = lanes.get(clip.laneId);
       if (!lane || lane.kind === "picture") continue;
       if (clip.synthPattern) this.scheduleSynth(clip, lane, doc.project.bpm);
-      else if (clip.assetId) await this.schedulePlayer(clip, lane, doc.project.bpm, getBuffer);
+      else {
+        const decoded = audio.get(clip.id);
+        if (decoded) this.schedulePlayer(clip, lane, doc.project.bpm, decoded);
+      }
+    }
+    this.scheduleKey = failed ? null : key;
+    if (wasPlaying) {
+      transport.seconds = beatsToSec(resumeBeats, doc.project.bpm);
+      transport.start();
+    }
+    if (failed && generation === this.rebuildGeneration) {
+      this.retryTimer = setTimeout(() => {
+        this.retryTimer = null;
+        if (generation === this.rebuildGeneration) void this.rebuildSchedule(doc, getBuffer);
+      }, 1_000);
     }
   }
 
-  private async schedulePlayer(clip: Clip, lane: Lane, bpm: number, getBuffer: BufferFn): Promise<void> {
-    if (!clip.assetId) return;
-    try {
-      const bytes = await getBuffer(clip.assetId);
-      const ctx = Tone.getContext();
-      const audio = await ctx.decodeAudioData(bytes.slice(0));
-      const player = new Tone.Player({
-        url: audio,
-        fadeIn: clip.fadeInSec,
-        fadeOut: clip.fadeOutSec,
-      });
-      player.volume.value = clip.gainDb;
-      player.connect(this.channelFor(lane));
-      const startSec = beatsToSec(clip.startBeats, bpm);
-      const durSec = beatsToSec(clip.lengthBeats, bpm);
-      player.sync().start(startSec, clip.cueInSec, durSec);
-      this.players.set(clip.id, player);
-    } catch (err) {
-      console.warn("schedule player failed", clip.id, err);
-    }
+  private schedulePlayer(clip: Clip, lane: Lane, bpm: number, audio: AudioBuffer): void {
+    const player = new Tone.Player({
+      url: audio,
+      fadeIn: clip.fadeInSec,
+      fadeOut: clip.fadeOutSec,
+    });
+    player.volume.value = clip.gainDb;
+    player.connect(this.channelFor(lane));
+    const startSec = beatsToSec(clip.startBeats, bpm);
+    const durSec = beatsToSec(clip.lengthBeats, bpm);
+    player.sync().start(startSec, clip.cueInSec, durSec);
+    this.players.set(clip.id, player);
   }
 
   private scheduleSynth(clip: Clip, lane: Lane, bpm: number): void {
@@ -179,7 +219,19 @@ class ToneEngine {
   }
 
   invalidateSchedule(): void {
-    this.scheduleKey = "";
+    this.scheduleKey = null;
+  }
+
+  dispose(): void {
+    this.rebuildGeneration += 1;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    this.scheduleKey = null;
+    this.clearSchedule();
+    for (const channel of this.channels.values()) channel.dispose();
+    this.channels.clear();
+    this.decodedBuffers.clear();
+    this.stop();
   }
 }
 
