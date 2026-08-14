@@ -122,6 +122,7 @@ export function Timeline() {
     originX: number;
     originBeats: Record<string, number>;
     originCue: Record<string, number>;
+    originLength: Record<string, number>;
     originFade: Record<string, { in: number; out: number }>;
     bypass: boolean;
   } | null>(null);
@@ -146,12 +147,14 @@ export function Timeline() {
     const ids = selectedClipIds.includes(clip.id) ? selectedClipIds : [clip.id];
     const originBeats: Record<string, number> = {};
     const originCue: Record<string, number> = {};
+    const originLength: Record<string, number> = {};
     const originFade: Record<string, { in: number; out: number }> = {};
     for (const id of ids) {
       const item = session.clips.find((c) => c.id === id);
       if (!item) continue;
       originBeats[id] = item.startBeats;
       originCue[id] = item.cueInSec;
+      originLength[id] = item.lengthBeats;
       originFade[id] = { in: item.fadeInSec, out: item.fadeOutSec };
     }
     drag.current = {
@@ -160,6 +163,7 @@ export function Timeline() {
       originX: e.clientX,
       originBeats,
       originCue,
+      originLength,
       originFade,
       bypass: e.altKey || !snapOn,
     };
@@ -182,9 +186,9 @@ export function Timeline() {
       const id = state.ids[0];
       if (!id) return;
       const origin = state.originBeats[id] ?? 0;
-      const clip = session.clips.find((c) => c.id === id);
-      if (!clip) return;
-      const beats = state.kind === "crop-start" ? origin + deltaBeats : origin + clip.lengthBeats + deltaBeats;
+      const beats = state.kind === "crop-start"
+        ? origin + deltaBeats
+        : origin + (state.originLength[id] ?? 0) + deltaBeats;
       cropClipEdge(id, state.kind === "crop-start" ? "start" : "end", beats, grid, state.bypass, false);
     } else if (state.kind === "slip") {
       const id = state.ids[0];
@@ -216,7 +220,7 @@ export function Timeline() {
           cueInSec: state.originCue[id] ?? clip?.cueInSec ?? 0,
           fadeInSec: state.originFade[id]?.in ?? clip?.fadeInSec ?? 0,
           fadeOutSec: state.originFade[id]?.out ?? clip?.fadeOutSec ?? 0,
-          lengthBeats: clip?.lengthBeats ?? 0,
+          lengthBeats: state.originLength[id] ?? clip?.lengthBeats ?? 0,
         };
       });
       const after = state.ids.map((id) => {

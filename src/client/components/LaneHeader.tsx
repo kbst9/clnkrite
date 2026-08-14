@@ -1,5 +1,6 @@
 import type { Lane } from "@shared/types";
 import { parseSynthConfig, SYNTH_TYPES } from "@shared/synth";
+import { nextStemHeaderMute } from "@shared/stems";
 import { useProjectStore } from "../stores/projectStore";
 import { useTransportStore } from "../stores/transportStore";
 import { useUiStore } from "../stores/uiStore";
@@ -60,9 +61,11 @@ export function LaneHeader({ lane }: { lane: Lane }) {
           className="rounded-sm border border-line px-1 font-mono text-[9px] uppercase text-brass"
           title="Toggle parent vs stems"
           onClick={() => {
-            const hideKids = children.some((child) => child.visible);
-            for (const child of children) patchLane(child.id, { visible: !hideKids });
-            patchLane(lane.id, { muted: hideKids, visible: hideKids });
+            const next = nextStemHeaderMute(lane.muted);
+            patchLane(lane.id, { muted: next.parentMuted, visible: !next.parentMuted });
+            for (const child of children) {
+              patchLane(child.id, { muted: next.childrenMuted, visible: !next.childrenMuted });
+            }
           }}
         >
           stems

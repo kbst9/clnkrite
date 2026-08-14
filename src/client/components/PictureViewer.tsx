@@ -15,13 +15,27 @@ export function PictureViewer() {
   const clip = lane ? doc?.clips.find((item) => item.laneId === lane.id) : undefined;
   const asset = clip?.assetId ? doc?.assets.find((item) => item.id === clip.assetId) : undefined;
 
+  function reseat(video: HTMLVideoElement, currentPlayhead: number, shouldPlay: boolean): void {
+    if (!clip || !doc) return;
+    const relativeBeats = currentPlayhead - clip.startBeats;
+    const insideClip = relativeBeats >= 0 && relativeBeats < clip.lengthBeats;
+    const target = Math.max(0, beatsToSec(relativeBeats, doc.project.bpm));
+    try {
+      if (Math.abs(video.currentTime - target) > 0.06) video.currentTime = target;
+    } catch {
+      // Metadata may not be loaded yet; the next 250 ms reseat will retry.
+    }
+    if (shouldPlay && insideClip) {
+      if (video.paused) void video.play().catch(() => undefined);
+    } else if (!video.paused) {
+      video.pause();
+    }
+  }
+
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !clip || !doc) return;
-    const target = Math.max(0, beatsToSec(playheadBeats - clip.startBeats, doc.project.bpm));
-    if (Math.abs(video.currentTime - target) > 0.06) video.currentTime = target;
-    if (playing && video.paused) void video.play().catch(() => undefined);
-    if (!playing && !video.paused) video.pause();
+    reseat(video, playheadBeats, playing);
   }, [playheadBeats, playing, clip, doc]);
 
   useEffect(() => {
@@ -30,8 +44,19 @@ export function PictureViewer() {
       const state = useTransportStore.getState();
       const project = useProjectStore.getState().doc;
       if (!video || !clip || !project) return;
-      const target = Math.max(0, beatsToSec(state.playheadBeats - clip.startBeats, project.project.bpm));
-      if (Math.abs(video.currentTime - target) > 0.06) video.currentTime = target;
+      const relativeBeats = state.playheadBeats - clip.startBeats;
+      const insideClip = relativeBeats >= 0 && relativeBeats < clip.lengthBeats;
+      const target = Math.max(0, beatsToSec(relativeBeats, project.project.bpm));
+      try {
+        if (Math.abs(video.currentTime - target) > 0.06) video.currentTime = target;
+      } catch {
+        // Retry after metadata arrives.
+      }
+      if (state.playing && insideClip) {
+        if (video.paused) void video.play().catch(() => undefined);
+      } else if (!video.paused) {
+        video.pause();
+      }
     }, 250);
     return () => window.clearInterval(id);
   }, [clip]);
