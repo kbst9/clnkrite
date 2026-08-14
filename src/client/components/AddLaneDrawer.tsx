@@ -7,8 +7,9 @@ import { useUiStore } from "../stores/uiStore";
 const SOURCES: Array<{ kind: LaneKind; title: string; blurb: string }> = [
   { kind: "music3", title: "Music3", blurb: "Full-mix generate on Kevin's GPU. Writes the whole band." },
   { kind: "acestep", title: "ACE-Step", blurb: "Second local engine. Hidden unless the bridge reports it." },
-  { kind: "synth", title: "Synth", blurb: "Tone.js instrument lane. Pattern editor ships in M5." },
+  { kind: "synth", title: "Synth", blurb: "Tone.js instrument. Double-click the lane to drop a pattern clip." },
   { kind: "import", title: "Import", blurb: "Drop a vocal or stem. wav / mp3 / flac / m4a / ogg." },
+  { kind: "picture", title: "Picture", blurb: "One video lane, locked to the transport. Adding replaces." },
 ];
 
 export function AddLaneDrawer() {
@@ -21,6 +22,7 @@ export function AddLaneDrawer() {
   const addLane = useProjectStore((s) => s.addLane);
   const projectId = useProjectStore((s) => s.doc?.project.id);
   const importLane = useProjectStore((s) => s.doc?.lanes.find((lane) => lane.kind === "import"));
+  const addSynthPattern = useProjectStore((s) => s.addSynthPattern);
   const loadProject = useProjectStore((s) => s.loadProject);
   const playheadBeats = useTransportStore((s) => s.playheadBeats);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -30,9 +32,14 @@ export function AddLaneDrawer() {
   if (drawer !== "add-lane") return null;
 
   async function add(kind: LaneKind) {
+    if (kind === "picture") {
+      fileInput.current?.click();
+      return;
+    }
     const lane = await addLane({ kind });
     close();
     if (lane && (kind === "music3" || kind === "acestep")) openDrawer("generate");
+    if (lane && kind === "synth") addSynthPattern(lane.id, playheadBeats, 16);
   }
 
   async function onImport(file: File) {
@@ -40,7 +47,10 @@ export function AddLaneDrawer() {
     setError(null);
     setUploading(true);
     try {
-      const lane = importLane ?? (await addLane({ kind: "import" }));
+      const isVideo = file.type.startsWith("video/");
+      const lane = isVideo
+        ? await addLane({ kind: "picture" })
+        : importLane ?? (await addLane({ kind: "import" }));
       if (!lane) throw new Error("Could not create the import lane");
 
       const form = new FormData();
@@ -102,12 +112,12 @@ export function AddLaneDrawer() {
         })}
       </ul>
       <label className="mt-6 block rounded-md border border-dashed border-line px-4 py-6 text-center text-sm text-mute hover:border-brass">
-        {uploading ? "Importing…" : "Import audio file"}
+        {uploading ? "Importing…" : "Import audio or video"}
         <input
           ref={fileInput}
           type="file"
           disabled={uploading}
-          accept="audio/wav,audio/mpeg,audio/flac,audio/ogg,audio/mp4,audio/x-m4a,.wav,.mp3,.flac,.ogg,.m4a"
+          accept="audio/wav,audio/mpeg,audio/flac,audio/ogg,audio/mp4,audio/x-m4a,video/mp4,video/webm,.wav,.mp3,.flac,.ogg,.m4a,.mp4,.webm"
           className="hidden"
           onChange={(e) => {
             const file = e.target.files?.[0];

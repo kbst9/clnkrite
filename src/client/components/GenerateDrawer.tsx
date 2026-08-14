@@ -19,6 +19,7 @@ export function GenerateDrawer() {
   const [caption, setCaption] = useState("");
   const [seed, setSeed] = useState(() => Math.floor(Math.random() * 1_000_000));
   const [durationSec, setDurationSec] = useState(60);
+  const [inferenceSteps, setInferenceSteps] = useState(8);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -35,24 +36,40 @@ export function GenerateDrawer() {
   }
 
   async function onSubmit() {
-    if (!armed || armed.kind !== "music3") {
-      setError("Arm a Music3 lane first.");
+    if (!armed || (armed.kind !== "music3" && armed.kind !== "acestep")) {
+      setError("Arm a Music3 or ACE-Step lane first.");
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      await submit(doc!.project.id, {
-        kind: "music3_generate",
-        laneId: armed.id,
-        params: {
-          lyrics,
-          caption,
-          seed,
-          durationSec: Math.min(240, Math.max(10, durationSec)),
-          playheadBeats,
-        },
-      });
+      if (armed.kind === "acestep") {
+        await submit(doc!.project.id, {
+          kind: "acestep_generate",
+          laneId: armed.id,
+          params: {
+            prompt: caption,
+            lyrics,
+            audioDuration: Math.min(600, Math.max(10, durationSec)),
+            bpm: doc!.project.bpm,
+            seed,
+            inferenceSteps,
+            playheadBeats,
+          },
+        });
+      } else {
+        await submit(doc!.project.id, {
+          kind: "music3_generate",
+          laneId: armed.id,
+          params: {
+            lyrics,
+            caption,
+            seed,
+            durationSec: Math.min(240, Math.max(10, durationSec)),
+            playheadBeats,
+          },
+        });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "submit_failed");
     } finally {
@@ -69,7 +86,7 @@ export function GenerateDrawer() {
         </button>
       </div>
       <p className="mb-3 text-sm text-mute">
-        Music3 writes the whole band. Want parts? Explode into stems (M7). Target:{" "}
+        Music3 writes the whole band. Want parts? Right-click a clip and explode into stems. Target:{" "}
         <span className="text-brass">{armed?.name ?? "no armed lane"}</span>
       </p>
       <div className="mb-2 flex flex-wrap gap-1">
@@ -136,17 +153,30 @@ export function GenerateDrawer() {
           </div>
         </label>
         <label className="flex-1 text-xs uppercase tracking-widest text-mute">
-          Duration (10–240)
+          Duration
           <input
             type="number"
             min={10}
-            max={240}
+            max={armed?.kind === "acestep" ? 600 : 240}
             className="mt-1 w-full px-2 py-1 font-mono"
             value={durationSec}
             onChange={(e) => setDurationSec(Number(e.target.value) || 60)}
           />
         </label>
       </div>
+      {armed?.kind === "acestep" && (
+        <label className="mb-3 block text-xs uppercase tracking-widest text-mute">
+          Inference steps
+          <input
+            type="number"
+            min={1}
+            max={64}
+            className="mt-1 w-full px-2 py-1 font-mono"
+            value={inferenceSteps}
+            onChange={(e) => setInferenceSteps(Number(e.target.value) || 8)}
+          />
+        </label>
+      )}
       {error && <p className="mb-2 font-mono text-xs text-ember">{error}</p>}
       <button
         type="button"

@@ -3,6 +3,7 @@ import { isTerminalJobStatus } from "@shared/jobs";
 import { useJobStore } from "../stores/jobStore";
 import { useProjectStore } from "../stores/projectStore";
 import { useUiStore } from "../stores/uiStore";
+import { clearLocalCache } from "../lib/cache";
 import { JobChip } from "./JobChip";
 import { Transport } from "./Transport";
 
@@ -27,6 +28,8 @@ export function TopBar() {
   const jobs = useJobStore((s) => s.jobs);
   const bridgeOnline = useUiStore((s) => s.bridgeOnline);
   const openDrawer = useUiStore((s) => s.openDrawer);
+  const snapOn = useUiStore((s) => s.snapOn);
+  const toggleSnap = useUiStore((s) => s.toggleSnap);
 
   if (!project) return null;
   const active = Object.values(jobs).filter((j) => !isTerminalJobStatus(j.status));
@@ -123,6 +126,23 @@ export function TopBar() {
           />
           {bridgeOnline === false ? "GPU bridge offline" : "bridge"}
         </span>
+        <button
+          type="button"
+          className={`rounded-sm border px-2 py-1 font-mono text-[10px] uppercase ${
+            snapOn ? "border-brass text-brass" : "border-line text-mute"
+          }`}
+          onClick={toggleSnap}
+        >
+          Snap
+        </button>
+        <button
+          type="button"
+          className="font-mono text-[10px] uppercase text-mute hover:text-paper"
+          onClick={() => void clearLocalCache()}
+          title="IndexedDB cache only — D1 is truth"
+        >
+          Clear cache
+        </button>
         <button
           type="button"
           className="rounded-sm border border-brass/60 px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.18em] text-brass hover:bg-brass hover:text-ink"
