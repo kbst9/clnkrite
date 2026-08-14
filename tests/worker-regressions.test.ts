@@ -198,3 +198,66 @@ describe("worker regressions", () => {
     expect(remaining?.jobs.map((item) => item.id)).toEqual(["job-second"]);
   });
 });
+
+describe("stem explode ingest", () => {
+  it("creates four child lanes and mutes the parent", async () => {
+    const store = createMemoryStore();
+    const project = await store.createProject({ title: "Stems", bpm: 120 });
+    const lane = await store.createLane(project.id, { kind: "music3", name: "Guitar Song", arm: true });
+    const now = Date.now();
+    await store.createAsset({
+      id: "mix",
+      projectId: project.id,
+      kind: "audio",
+      r2Key: "mix.wav",
+      mime: "audio/wav",
+      bytes: 44,
+      durationSec: 4,
+      sampleRate: 8000,
+      channels: 1,
+      source: "music3",
+      sourceJobId: "gen",
+      peaksR2Key: null,
+      createdAt: now,
+    });
+    await store.createClip({
+      id: "mix-clip",
+      laneId: lane!.id,
+      assetId: "mix",
+      startBeats: 8,
+      lengthBeats: 8,
+      cueInSec: 0,
+      fadeInSec: 0,
+      fadeOutSec: 0,
+      gainDb: 0,
+      synthPattern: null,
+      label: "mix",
+      createdAt: now,
+      updatedAt: now,
+    });
+    const job = await store.createJob({
+      id: "explode",
+      projectId: project.id,
+      laneId: lane!.id,
+      kind: "demucs_split",
+      params: { sourceAssetId: "mix", sourceClipId: "mix-clip", playheadBeats: 8 },
+      status: "running",
+      bridgeJobId: "bridge-explode",
+      error: null,
+      resultAssetIds: [],
+      createdAt: now,
+      updatedAt: now,
+    });
+    const wav = wavBuffer();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(wav, { status: 200 })));
+    await ingestSucceededJob(mockEnv(), store, job);
+    const doc = await store.getDocument(project.id);
+    const parent = doc?.lanes.find((item) => item.id === lane!.id);
+    const kids = doc?.lanes.filter((item) => item.parentLaneId === lane!.id) ?? [];
+    expect(parent?.muted).toBe(true);
+    expect(kids).toHaveLength(4);
+    expect(kids.map((item) => item.stemRole)).toEqual(["vocals", "drums", "bass", "other"]);
+    expect(doc?.clips.filter((item) => kids.some((kid) => kid.id === item.laneId))).toHaveLength(4);
+    expect((await store.getJob(job.id))?.status).toBe("succeeded");
+  });
+});
