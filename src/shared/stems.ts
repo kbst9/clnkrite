@@ -36,13 +36,16 @@ export function planStemExplode(input: StemExplodeInput): StemExplodePlan {
   const lanes: Lane[] = [];
   const clips: Clip[] = [];
   const assets: Asset[] = [];
-  for (const [index, art] of input.artifacts.entries()) {
-    const laneId = `job-${input.jobId}-lane-${art.role}`;
+  const artifacts = new Map(input.artifacts.map((artifact) => [artifact.role, artifact]));
+  for (const [index, role] of STEM_ROLES.entries()) {
+    const art = artifacts.get(role);
+    if (!art) throw new Error(`missing_stem:${role}`);
+    const laneId = `stem-${input.parentLane.id}-lane-${role}`;
     lanes.push({
       id: laneId,
       projectId: input.projectId,
       kind: "import",
-      name: stemLaneName(input.parentLane.name, art.role),
+      name: stemLaneName(input.parentLane.name, role),
       sortOrder: input.parentLane.sortOrder + index + 1,
       muted: false,
       soloed: false,
@@ -51,7 +54,7 @@ export function planStemExplode(input: StemExplodeInput): StemExplodePlan {
       armed: false,
       visible: true,
       parentLaneId: input.parentLane.id,
-      stemRole: art.role,
+      stemRole: role,
       synthConfig: null,
       createdAt: t,
       updatedAt: t,
@@ -92,4 +95,12 @@ export function planStemExplode(input: StemExplodeInput): StemExplodePlan {
 
 export function defaultStemRoles(): StemRole[] {
   return [...STEM_ROLES];
+}
+
+/** Lane-header stems badge: exclusive parent vs children. Never both unmuted. */
+export function nextStemHeaderMute(parentMuted: boolean): { parentMuted: boolean; childrenMuted: boolean } {
+  if (parentMuted) {
+    return { parentMuted: false, childrenMuted: true };
+  }
+  return { parentMuted: true, childrenMuted: false };
 }
