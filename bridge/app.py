@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import time
 import uuid
 from pathlib import Path
@@ -46,10 +47,97 @@ jobs: dict[str, dict[str, Any]] = {}
 queue: asyncio.Queue[str] = asyncio.Queue()
 running_id: str | None = None
 worker_started = False
+JOB_METADATA = "job.json"
+SCRATCH_MAX_AGE_SEC = 24 * 60 * 60
 
 
 def _now() -> float:
     return time.time()
+
+
+def _persist_job(job: dict[str, Any]) -> None:
+    dest = SCRATCH / str(job["id"])
+    dest.mkdir(parents=True, exist_ok=True)
+    metadata = {key: value for key, value in job.items() if key not in {"_http", "task"}}
+    temp = dest / f"{JOB_METADATA}.tmp"
+    temp.write_text(json.dumps(metadata, separators=(",", ":")), encoding="utf-8")
+    temp.replace(dest / JOB_METADATA)
+
+
+def _artifact_record(path: Path, duration_sec: Any = None) -> dict[str, Any]:
+    artifact: dict[str, Any] = {"name": path.name, "bytes": path.stat().st_size}
+    if duration_sec is not None:
+        artifact["durationSec"] = duration_sec
+    return artifact
+
+
+def _load_scratch_jobs() -> list[str]:
+    queued: list[str] = []
+    for dest in SCRATCH.iterdir():
+        if not dest.is_dir():
+            continue
+        metadata_path = dest / JOB_METADATA
+        output = dest / "output.wav"
+        job: dict[str, Any] | None = None
+        if metadata_path.is_file():
+            try:
+                loaded = json.loads(metadata_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    job = loaded
+            except (OSError, json.JSONDecodeError):
+                job = None
+        if job is None and output.is_file():
+            stamp = output.stat().st_mtime
+            job = {
+                "id": dest.name,
+                "kind": "music3_generate",
+                "params": {},
+                "status": "succeeded",
+                "error": None,
+                "artifacts": [_artifact_record(output)],
+                "createdAt": stamp,
+                "updatedAt": stamp,
+            }
+        if job is None:
+            continue
+
+        job["id"] = dest.name
+        job.setdefault("params", {})
+        job.setdefault("artifacts", [])
+        job.setdefault("error", None)
+        job.setdefault("createdAt", dest.stat().st_mtime)
+        job.setdefault("updatedAt", job["createdAt"])
+        if output.is_file() and job.get("status") in {"running", "succeeded"}:
+            job["status"] = "succeeded"
+            job["error"] = None
+            job["artifacts"] = [
+                _artifact_record(output, job.get("params", {}).get("durationSec"))
+            ]
+        elif job.get("status") == "running":
+            job["status"] = "queued"
+            job["error"] = "bridge_restarted"
+        job["task"] = None
+        jobs[dest.name] = job
+        _persist_job(job)
+        if job.get("status") == "queued":
+            queued.append(dest.name)
+    return queued
+
+
+def _prune_scratch() -> None:
+    if running_id is not None:
+        return
+    cutoff = _now() - SCRATCH_MAX_AGE_SEC
+    for dest in SCRATCH.iterdir():
+        if not dest.is_dir():
+            continue
+        job = jobs.get(dest.name)
+        if job and job.get("status") in {"queued", "running"}:
+            continue
+        updated_at = float(job.get("updatedAt", 0)) if job else dest.stat().st_mtime
+        if updated_at < cutoff:
+            shutil.rmtree(dest, ignore_errors=True)
+            jobs.pop(dest.name, None)
 
 
 def _music3_headers() -> dict[str, str]:
@@ -126,8 +214,10 @@ async def run_music3(job: dict[str, Any]) -> None:
                 return
         model = await resolve_music3_model()
         body = build_music3_body(job["params"], model)
+        duration = float(job["params"].get("durationSec") or 60)
+        read_timeout = max(600.0, duration * 20.0 + 600.0)
         job["_http"] = httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=10.0, read=600.0, write=30.0, pool=10.0)
+            timeout=httpx.Timeout(connect=10.0, read=read_timeout, write=30.0, pool=10.0)
         )
         res = await job["_http"].post(
             f"{MUSIC3_BASE_URL}{MUSIC3_ADAPTER['endpoint_path']}",
@@ -174,6 +264,8 @@ async def worker_loop() -> None:
             continue
         job["status"] = "running"
         job["startedAt"] = _now()
+        job["updatedAt"] = _now()
+        _persist_job(job)
         running_id = job_id
         kind = job["kind"]
         try:
@@ -189,7 +281,9 @@ async def worker_loop() -> None:
         finally:
             running_id = None
             job["updatedAt"] = _now()
+            _persist_job(job)
             queue.task_done()
+            _prune_scratch()
 
 
 @app.on_event("startup")
@@ -197,6 +291,9 @@ async def _startup() -> None:
     global worker_started
     if not worker_started:
         worker_started = True
+        for job_id in _load_scratch_jobs():
+            await queue.put(job_id)
+        _prune_scratch()
         asyncio.create_task(worker_loop())
 
 
@@ -229,6 +326,7 @@ async def create_job(body: dict[str, Any]) -> dict[str, str]:
         "updatedAt": _now(),
         "task": None,
     }
+    _persist_job(jobs[job_id])
     await queue.put(job_id)
     return {"jobId": job_id}
 
@@ -270,9 +368,11 @@ async def cancel_job(job_id: str) -> dict[str, str]:
         raise HTTPException(404, "not_found")
     job["status"] = "cancelled"
     job["error"] = "cancelled"
+    job["updatedAt"] = _now()
     client = job.get("_http")
     if client:
         await client.aclose()
+    _persist_job(job)
     return {"ok": "cancelled"}
 
 
