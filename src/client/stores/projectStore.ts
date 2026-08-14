@@ -15,7 +15,13 @@ import { api } from "../lib/api";
 import { attachFlushListeners, WriteQueue } from "../lib/writeQueue";
 
 const queue = new WriteQueue(500);
+const projectPatches = new Map<string, PatchProjectInput>();
+const lanePatches = new Map<string, PatchLaneInput>();
 let flushBound = false;
+
+function restorePatch<T extends object>(pending: Map<string, T>, id: string, sent: T): void {
+  pending.set(id, { ...sent, ...pending.get(id) });
+}
 
 function bindFlush(): void {
   if (flushBound || typeof window === "undefined") return;
@@ -93,14 +99,23 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     if (!doc) return;
     const project: Project = { ...doc.project, ...patch, updatedAt: Date.now() };
     set({ doc: { ...doc, project } });
+    projectPatches.set(project.id, { ...projectPatches.get(project.id), ...patch });
     queue.enqueue({
       id: `project:${project.id}`,
       run: async (init) => {
-        await api(`/api/projects/${project.id}`, {
-          method: "PATCH",
-          body: JSON.stringify(patch),
-          ...init,
-        });
+        const merged = projectPatches.get(project.id);
+        if (!merged) return;
+        projectPatches.delete(project.id);
+        try {
+          await api(`/api/projects/${project.id}`, {
+            method: "PATCH",
+            body: JSON.stringify(merged),
+            ...init,
+          });
+        } catch (err) {
+          restorePatch(projectPatches, project.id, merged);
+          throw err;
+        }
       },
     });
   },
@@ -165,14 +180,23 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       return { ...l, ...patch, updatedAt: Date.now() };
     });
     set({ doc: { ...doc, lanes } });
+    lanePatches.set(id, { ...lanePatches.get(id), ...patch });
     queue.enqueue({
       id: `lane:${id}`,
       run: async (init) => {
-        await api(`/api/lanes/${id}`, {
-          method: "PATCH",
-          body: JSON.stringify(patch),
-          ...init,
-        });
+        const merged = lanePatches.get(id);
+        if (!merged) return;
+        lanePatches.delete(id);
+        try {
+          await api(`/api/lanes/${id}`, {
+            method: "PATCH",
+            body: JSON.stringify(merged),
+            ...init,
+          });
+        } catch (err) {
+          restorePatch(lanePatches, id, merged);
+          throw err;
+        }
       },
     });
   },

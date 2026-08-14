@@ -14,6 +14,7 @@ interface JobState {
 }
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+const inFlightPolls = new Map<string, Promise<Job | null>>();
 
 function ensurePoll(): void {
   if (pollTimer) return;
@@ -62,16 +63,25 @@ export const useJobStore = create<JobState>((set, get) => ({
   },
 
   pollOnce: async (id) => {
-    try {
-      const job = await api<Job>(`/api/jobs/${id}`);
-      set((s) => ({ jobs: { ...s.jobs, [id]: job } }));
-      if (job.status === "succeeded") {
-        const projectId = useProjectStore.getState().doc?.project.id;
-        if (projectId) void useProjectStore.getState().loadProject(projectId);
+    const existing = inFlightPolls.get(id);
+    if (existing) return existing;
+
+    const poll = (async () => {
+      try {
+        const job = await api<Job>(`/api/jobs/${id}`);
+        set((s) => ({ jobs: { ...s.jobs, [id]: job } }));
+        if (job.status === "succeeded") {
+          const projectId = useProjectStore.getState().doc?.project.id;
+          if (projectId) void useProjectStore.getState().loadProject(projectId);
+        }
+        return job;
+      } catch {
+        return null;
+      } finally {
+        inFlightPolls.delete(id);
       }
-      return job;
-    } catch {
-      return null;
-    }
+    })();
+    inFlightPolls.set(id, poll);
+    return poll;
   },
 }));
