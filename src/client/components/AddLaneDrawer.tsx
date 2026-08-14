@@ -12,6 +12,24 @@ const SOURCES: Array<{ kind: LaneKind; title: string; blurb: string }> = [
   { kind: "picture", title: "Picture", blurb: "One video lane, locked to the transport. Adding replaces." },
 ];
 
+function readMediaDuration(file: File): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const media = document.createElement(file.type.startsWith("video/") ? "video" : "audio");
+    const finish = (duration?: number) => {
+      media.removeAttribute("src");
+      media.load();
+      URL.revokeObjectURL(url);
+      if (duration != null && Number.isFinite(duration) && duration > 0) resolve(duration);
+      else reject(new Error("Could not read media duration"));
+    };
+    media.preload = "metadata";
+    media.onloadedmetadata = () => finish(media.duration);
+    media.onerror = () => finish();
+    media.src = url;
+  });
+}
+
 export function AddLaneDrawer() {
   const drawer = useUiStore((s) => s.drawer);
   const close = useUiStore((s) => s.closeDrawer);
@@ -48,6 +66,7 @@ export function AddLaneDrawer() {
     setUploading(true);
     try {
       const isVideo = file.type.startsWith("video/");
+      const durationSec = await readMediaDuration(file).catch(() => null);
       const lane = isVideo
         ? await addLane({ kind: "picture" })
         : importLane ?? (await addLane({ kind: "import" }));
@@ -57,6 +76,7 @@ export function AddLaneDrawer() {
       form.append("file", file);
       form.append("laneId", lane.id);
       form.append("startBeats", String(playheadBeats));
+      if (durationSec != null) form.append("durationSec", String(durationSec));
       const response = await fetch(`/api/projects/${projectId}/assets`, { method: "POST", body: form });
       if (!response.ok) {
         const body = (await response.json().catch(() => null)) as { error?: string } | null;

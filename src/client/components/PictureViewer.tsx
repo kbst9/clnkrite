@@ -7,7 +7,7 @@ import { useUiStore } from "../stores/uiStore";
 export function PictureViewer() {
   const doc = useProjectStore((s) => s.doc);
   const playing = useTransportStore((s) => s.playing);
-  const playheadBeats = useTransportStore((s) => s.playheadBeats);
+  const seekRevision = useTransportStore((s) => s.seekRevision);
   const pictureOpen = useUiStore((s) => s.pictureOpen);
   const setPictureOpen = useUiStore((s) => s.setPictureOpen);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -35,8 +35,8 @@ export function PictureViewer() {
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !clip || !doc) return;
-    reseat(video, playheadBeats, playing);
-  }, [playheadBeats, playing, clip, doc]);
+    reseat(video, useTransportStore.getState().playheadBeats, playing);
+  }, [playing, seekRevision, clip, doc?.project.bpm, lane?.visible, pictureOpen]);
 
   useEffect(() => {
     const id = window.setInterval(() => {
