@@ -116,4 +116,4 @@ See `bridge/README.md` for env vars and tunnel notes. Local `wrangler dev` talks
 
 M0–M3 skeleton is in this repo (scaffold, project persistence, lanes + transport shell, bridge + Music3 generate plumbing).
 
-M4–M8 (timeline editing, synth lane UI, picture viewer, ACE-Step/Demucs explode, Playwright hardening) are stubbed so types compile. Do not treat those as shipped.
+v1.0-successpath: M0-M8 shipped. See VERSION, CHANGELOG.md, and docs/runbook.md.
