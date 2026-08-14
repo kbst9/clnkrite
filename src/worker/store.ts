@@ -39,7 +39,12 @@ export interface Store {
   updateAssetPeaks(id: string, peaksR2Key: string): Promise<Asset | null>;
 
   createClip(clip: Clip): Promise<Clip>;
+  getClip(id: string): Promise<Clip | null>;
+  updateClip(id: string, patch: Partial<Clip>): Promise<Clip | null>;
+  deleteClip(id: string): Promise<boolean>;
   listClipsForProject(projectId: string): Promise<Clip[]>;
+  listClipsByAssetId(assetId: string): Promise<Clip[]>;
+  listAssetsBySourceJobId(jobId: string): Promise<Asset[]>;
 
   createJob(job: Job): Promise<Job>;
   getJob(id: string): Promise<Job | null>;
@@ -73,21 +78,27 @@ function defaultProject(input: CreateProjectInput): Project {
 
 function defaultLane(projectId: string, input: CreateLaneInput, sortOrder: number): Lane {
   const t = now();
+  const synthConfig =
+    input.synthConfig !== undefined
+      ? input.synthConfig
+      : input.kind === "synth"
+        ? JSON.stringify({ type: "PolySynth" })
+        : null;
   return {
-    id: newId(),
+    id: input.id ?? newId(),
     projectId,
     kind: input.kind,
     name: input.name?.trim() || LANE_KIND_NAMES[input.kind],
-    sortOrder,
-    muted: false,
+    sortOrder: input.sortOrder ?? sortOrder,
+    muted: Boolean(input.muted),
     soloed: false,
     volumeDb: 0,
     pan: 0,
     armed: Boolean(input.arm),
     visible: true,
-    parentLaneId: null,
-    stemRole: null,
-    synthConfig: null,
+    parentLaneId: input.parentLaneId ?? null,
+    stemRole: input.stemRole ?? null,
+    synthConfig,
     createdAt: t,
     updatedAt: t,
   };
@@ -173,7 +184,12 @@ export function createMemoryStore(): Store {
     },
     async createLane(projectId, input) {
       if (!projects.has(projectId)) return null;
-      const sortOrder = await store.nextSortOrder(projectId);
+      if (input.kind === "picture") {
+        for (const [id, lane] of [...lanes]) {
+          if (lane.projectId === projectId && lane.kind === "picture") await store.deleteLane(id);
+        }
+      }
+      const sortOrder = input.sortOrder ?? (await store.nextSortOrder(projectId));
       const shouldArm = input.arm ?? (input.kind === "music3" || input.kind === "acestep");
       const lane = defaultLane(projectId, { ...input, arm: shouldArm }, sortOrder);
       lanes.set(lane.id, lane);
@@ -240,6 +256,25 @@ export function createMemoryStore(): Store {
     async createClip(clip) {
       clips.set(clip.id, clip);
       return clip;
+    },
+    async getClip(id) {
+      return clips.get(id) ?? null;
+    },
+    async updateClip(id, patch) {
+      const current = clips.get(id);
+      if (!current) return null;
+      const next: Clip = { ...current, ...patch, id: current.id, updatedAt: now() };
+      clips.set(id, next);
+      return next;
+    },
+    async deleteClip(id) {
+      return clips.delete(id);
+    },
+    async listClipsByAssetId(assetId) {
+      return [...clips.values()].filter((clip) => clip.assetId === assetId);
+    },
+    async listAssetsBySourceJobId(jobId) {
+      return [...assets.values()].filter((asset) => asset.sourceJobId === jobId);
     },
     async listClipsForProject(projectId) {
       const laneIds = new Set(
@@ -602,7 +637,14 @@ export function createD1Store(db: D1Database): Store {
     async createLane(projectId, input) {
       const project = await store.getProject(projectId);
       if (!project) return null;
-      const sortOrder = await store.nextSortOrder(projectId);
+      if (input.kind === "picture") {
+        const existing = await db
+          .prepare(`SELECT id FROM lanes WHERE project_id = ? AND kind = 'picture'`)
+          .bind(projectId)
+          .all<{ id: string }>();
+        for (const row of existing.results ?? []) await store.deleteLane(row.id);
+      }
+      const sortOrder = input.sortOrder ?? (await store.nextSortOrder(projectId));
       const shouldArm = input.arm ?? (input.kind === "music3" || input.kind === "acestep");
       const lane = defaultLane(projectId, { ...input, arm: shouldArm }, sortOrder);
       await db
@@ -755,6 +797,50 @@ export function createD1Store(db: D1Database): Store {
         )
         .run();
       return clip;
+    },
+    async getClip(id) {
+      const row = await db.prepare(`SELECT * FROM clips WHERE id = ?`).bind(id).first<ClipRow>();
+      return row ? mapClip(row) : null;
+    },
+    async updateClip(id, patch) {
+      const current = await store.getClip(id);
+      if (!current) return null;
+      const next: Clip = { ...current, ...patch, id: current.id, updatedAt: now() };
+      await db
+        .prepare(
+          `UPDATE clips SET lane_id=?, asset_id=?, start_beats=?, length_beats=?, cue_in_sec=?, fade_in_sec=?, fade_out_sec=?, gain_db=?, synth_pattern=?, label=?, updated_at=?
+           WHERE id=?`,
+        )
+        .bind(
+          next.laneId,
+          next.assetId,
+          next.startBeats,
+          next.lengthBeats,
+          next.cueInSec,
+          next.fadeInSec,
+          next.fadeOutSec,
+          next.gainDb,
+          next.synthPattern,
+          next.label,
+          next.updatedAt,
+          id,
+        )
+        .run();
+      return next;
+    },
+    async deleteClip(id) {
+      const existing = await store.getClip(id);
+      if (!existing) return false;
+      await db.prepare(`DELETE FROM clips WHERE id = ?`).bind(id).run();
+      return true;
+    },
+    async listClipsByAssetId(assetId) {
+      const { results } = await db.prepare(`SELECT * FROM clips WHERE asset_id = ?`).bind(assetId).all<ClipRow>();
+      return (results ?? []).map(mapClip);
+    },
+    async listAssetsBySourceJobId(jobId) {
+      const { results } = await db.prepare(`SELECT * FROM assets WHERE source_job_id = ?`).bind(jobId).all<AssetRow>();
+      return (results ?? []).map(mapAsset);
     },
     async listClipsForProject(projectId) {
       const { results } = await db

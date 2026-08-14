@@ -1,24 +1,35 @@
 import { Hono } from "hono";
 import { secToBeats } from "@shared/beats";
+import { splitClip } from "@shared/clipOps";
 import { newId } from "@shared/ids";
 import { jobTimedOut, mapBridgeStatus, isTerminalJobStatus } from "@shared/jobs";
 import type {
+  CreateClipInput,
   CreateJobInput,
   CreateLaneInput,
   CreateProjectInput,
+  DemucsJobParams,
   EnginesResponse,
   Job,
   Music3JobParams,
+  PatchClipInput,
   PatchLaneInput,
   PatchProjectInput,
+  SplitClipInput,
 } from "@shared/types";
-import { AUDIO_MIME_ALLOWLIST, MAX_AUDIO_BYTES } from "@shared/types";
+import {
+  AUDIO_MIME_ALLOWLIST,
+  MAX_AUDIO_BYTES,
+  MAX_VIDEO_BYTES,
+  VIDEO_MIME_ALLOWLIST,
+} from "@shared/types";
 import {
   BridgeOfflineError,
   bridgeCancelJob,
   bridgeCreateJob,
   bridgeGetJob,
   bridgeHealth,
+  bridgePutJobSource,
 } from "./bridge";
 import type { Env } from "./env";
 import { ingestSucceededJob } from "./ingest";
@@ -42,6 +53,9 @@ function guessExt(mime: string): string {
   if (mime.includes("mpeg") || mime.includes("mp3")) return "mp3";
   if (mime.includes("flac")) return "flac";
   if (mime.includes("ogg")) return "ogg";
+  if (mime === "video/mp4") return "mp4";
+  if (mime === "video/webm") return "webm";
+  if (mime === "video/quicktime") return "mov";
   if (mime.includes("mp4") || mime.includes("m4a")) return "m4a";
   if (mime.includes("aac")) return "aac";
   return "wav";
@@ -136,35 +150,41 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
       startBeats = Number(c.req.query("startBeats") ?? 0) || 0;
     }
 
-    if (!(AUDIO_MIME_ALLOWLIST as readonly string[]).includes(mime)) {
-      return jsonError(c, 415, "mime_not_allowed");
-    }
-    if (bytes.byteLength > MAX_AUDIO_BYTES) return jsonError(c, 413, "too_large");
+    const isVideo = (VIDEO_MIME_ALLOWLIST as readonly string[]).includes(mime);
+    const isAudio = (AUDIO_MIME_ALLOWLIST as readonly string[]).includes(mime);
+    if (!isVideo && !isAudio) return jsonError(c, 415, "mime_not_allowed");
+    if (isAudio && bytes.byteLength > MAX_AUDIO_BYTES) return jsonError(c, 413, "too_large");
+    if (isVideo && bytes.byteLength > MAX_VIDEO_BYTES) return jsonError(c, 413, "too_large");
 
     let lane = laneId ? await store.getLane(laneId) : null;
     if (lane && lane.projectId !== projectId) return jsonError(c, 400, "lane_mismatch");
     if (!lane) {
-      lane = await store.createLane(projectId, { kind: "import", name: "Import" });
+      lane = await store.createLane(projectId, {
+        kind: isVideo ? "picture" : "import",
+        name: isVideo ? "Picture" : "Import",
+      });
     }
     if (!lane) return jsonError(c, 500, "lane_create_failed");
 
     const assetId = newId();
     const ext = guessExt(mime);
-    const r2Key = `projects/${projectId}/audio/${assetId}.${ext}`;
+    const r2Key = isVideo
+      ? `projects/${projectId}/video/${assetId}.${ext}`
+      : `projects/${projectId}/audio/${assetId}.${ext}`;
     await c.env.MEDIA.put(r2Key, bytes, { httpMetadata: { contentType: mime } });
-    const wav = parseWavHeader(bytes);
+    const wav = isAudio ? parseWavHeader(bytes) : null;
     const t = Date.now();
     const asset = await store.createAsset({
       id: assetId,
       projectId,
-      kind: "audio",
+      kind: isVideo ? "video" : "audio",
       r2Key,
       mime,
       bytes: bytes.byteLength,
       durationSec: wav?.durationSec ?? null,
       sampleRate: wav?.sampleRate ?? null,
       channels: wav?.channels ?? null,
-      source: "import",
+      source: isVideo ? "video" : "import",
       sourceJobId: null,
       peaksR2Key: null,
       createdAt: t,
@@ -243,6 +263,20 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
       if (!lane.armed) return jsonError(c, 400, "lane_not_armed");
     }
 
+    if (body.kind === "demucs_split") {
+      const params = (body.params ?? {}) as DemucsJobParams;
+      if (!params.sourceAssetId) return jsonError(c, 400, "source_asset_required");
+      const asset = await store.getAsset(params.sourceAssetId);
+      if (!asset || asset.projectId !== projectId) return jsonError(c, 400, "source_asset_not_found");
+      if (asset.source !== "music3" && asset.source !== "acestep") {
+        return jsonError(c, 400, "source_not_generated");
+      }
+      if (!body.laneId) {
+        const clips = await store.listClipsByAssetId(asset.id);
+        body.laneId = clips[0]?.laneId;
+      }
+    }
+
     const t = Date.now();
     let job: Job = {
       id: newId(),
@@ -266,6 +300,17 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
           bridgeJobId: created.jobId,
           status: "queued",
         })) ?? job;
+      if (job.kind === "demucs_split" && job.bridgeJobId) {
+        const params = job.params as DemucsJobParams;
+        const source = await store.getAsset(params.sourceAssetId);
+        if (source) {
+          const obj = await c.env.MEDIA.get(source.r2Key);
+          if (obj) {
+            const buf = await obj.arrayBuffer();
+            await bridgePutJobSource(c.env, job.bridgeJobId, buf);
+          }
+        }
+      }
     } catch (err) {
       const offline = err instanceof BridgeOfflineError;
       job =
@@ -368,11 +413,57 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
     }
   });
 
-  // M4–M8 stubs so the surface is typed and callable
-  app.post("/api/lanes/:id/clips", (c) => c.json({ error: "not_implemented", milestone: "M4" }, 501));
-  app.patch("/api/clips/:id", (c) => c.json({ error: "not_implemented", milestone: "M4" }, 501));
-  app.delete("/api/clips/:id", (c) => c.json({ error: "not_implemented", milestone: "M4" }, 501));
-  app.post("/api/clips/:id/split", (c) => c.json({ error: "not_implemented", milestone: "M4" }, 501));
+  app.post("/api/lanes/:id/clips", async (c) => {
+    const store = c.get("store");
+    const lane = await store.getLane(c.req.param("id"));
+    if (!lane) return jsonError(c, 404, "not_found");
+    const body = (await c.req.json().catch(() => ({}))) as CreateClipInput;
+    const t = Date.now();
+    const clip = await store.createClip({
+      id: body.id ?? newId(),
+      laneId: lane.id,
+      assetId: body.assetId ?? null,
+      startBeats: body.startBeats ?? 0,
+      lengthBeats: body.lengthBeats ?? 4,
+      cueInSec: body.cueInSec ?? 0,
+      fadeInSec: body.fadeInSec ?? 0,
+      fadeOutSec: body.fadeOutSec ?? 0,
+      gainDb: body.gainDb ?? 0,
+      synthPattern: body.synthPattern ?? null,
+      label: body.label ?? null,
+      createdAt: t,
+      updatedAt: t,
+    });
+    return c.json(clip, 201);
+  });
+
+  app.patch("/api/clips/:id", async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as PatchClipInput;
+    const clip = await c.get("store").updateClip(c.req.param("id"), body);
+    if (!clip) return jsonError(c, 404, "not_found");
+    return c.json(clip);
+  });
+
+  app.delete("/api/clips/:id", async (c) => {
+    const ok = await c.get("store").deleteClip(c.req.param("id"));
+    if (!ok) return jsonError(c, 404, "not_found");
+    return c.json({ ok: true });
+  });
+
+  app.post("/api/clips/:id/split", async (c) => {
+    const store = c.get("store");
+    const clip = await store.getClip(c.req.param("id"));
+    if (!clip) return jsonError(c, 404, "not_found");
+    const body = (await c.req.json().catch(() => ({}))) as SplitClipInput;
+    const lane = await store.getLane(clip.laneId);
+    const project = lane ? await store.getProject(lane.projectId) : null;
+    const split = splitClip(clip, body.atBeats, project?.bpm ?? 120, newId());
+    if (!split) return jsonError(c, 400, "invalid_split");
+    const [left, right] = split;
+    await store.updateClip(left.id, left);
+    await store.createClip(right);
+    return c.json({ left, right });
+  });
 
   return app;
 }
