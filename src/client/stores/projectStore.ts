@@ -8,6 +8,7 @@ import type {
   CreateProjectInput,
   Lane,
   PatchLaneInput,
+  PatchClipInput,
   PatchProjectInput,
   Project,
   ProjectDocument,
@@ -15,13 +16,15 @@ import type {
 } from "@shared/types";
 import { LANE_KIND_NAMES } from "@shared/types";
 import { toneEngine } from "../engine/toneEngine";
-import { api } from "../lib/api";
+import { ApiError, api } from "../lib/api";
 import { undoStack } from "../lib/undo";
 import { attachFlushListeners, WriteQueue } from "../lib/writeQueue";
 
 const queue = new WriteQueue(500);
 const projectPatches = new Map<string, PatchProjectInput>();
 const lanePatches = new Map<string, PatchLaneInput>();
+const clipPatches = new Map<string, PatchClipInput>();
+const persistedClipIds = new Set<string>();
 let flushBound = false;
 
 function restorePatch<T extends object>(pending: Map<string, T>, id: string, sent: T): void {
@@ -32,6 +35,83 @@ function bindFlush(): void {
   if (flushBound || typeof window === "undefined") return;
   flushBound = true;
   attachFlushListeners(queue);
+}
+
+function toClipPatch(patch: Partial<Clip>): PatchClipInput {
+  const next: PatchClipInput = {};
+  if (patch.laneId !== undefined) next.laneId = patch.laneId;
+  if (patch.startBeats !== undefined) next.startBeats = patch.startBeats;
+  if (patch.lengthBeats !== undefined) next.lengthBeats = patch.lengthBeats;
+  if (patch.cueInSec !== undefined) next.cueInSec = patch.cueInSec;
+  if (patch.fadeInSec !== undefined) next.fadeInSec = patch.fadeInSec;
+  if (patch.fadeOutSec !== undefined) next.fadeOutSec = patch.fadeOutSec;
+  if (patch.gainDb !== undefined) next.gainDb = patch.gainDb;
+  if (patch.synthPattern !== undefined) next.synthPattern = patch.synthPattern;
+  if (patch.label !== undefined) next.label = patch.label;
+  return next;
+}
+
+function previousClipPatch(clip: Clip, patch: PatchClipInput): PatchClipInput {
+  const previous: PatchClipInput = {};
+  for (const key of Object.keys(patch) as Array<keyof PatchClipInput>) {
+    Object.assign(previous, { [key]: clip[key] });
+  }
+  return previous;
+}
+
+function enqueueClipWrite(id: string): void {
+  queue.enqueue({
+    id: `clip:${id}`,
+    run: async (init) => {
+      const clip = useProjectStore.getState().doc?.clips.find((item) => item.id === id);
+      const exists = persistedClipIds.has(id);
+      if (!clip) {
+        if (!exists) {
+          clipPatches.delete(id);
+          return;
+        }
+        try {
+          await api(`/api/clips/${id}`, { method: "DELETE", ...init });
+        } catch (err) {
+          if (!(err instanceof ApiError && err.status === 404)) throw err;
+        }
+        persistedClipIds.delete(id);
+        clipPatches.delete(id);
+        return;
+      }
+
+      if (!exists) {
+        const sent = clipPatches.get(id);
+        clipPatches.delete(id);
+        try {
+          await api(`/api/lanes/${clip.laneId}/clips`, {
+            method: "POST",
+            body: JSON.stringify(clip),
+            ...init,
+          });
+          persistedClipIds.add(id);
+        } catch (err) {
+          if (sent) restorePatch(clipPatches, id, sent);
+          throw err;
+        }
+        return;
+      }
+
+      const merged = clipPatches.get(id);
+      if (!merged || Object.keys(merged).length === 0) return;
+      clipPatches.delete(id);
+      try {
+        await api(`/api/clips/${id}`, { method: "PATCH", body: JSON.stringify(merged), ...init });
+      } catch (err) {
+        restorePatch(clipPatches, id, merged);
+        throw err;
+      }
+    },
+  });
+}
+
+function rememberPersistedClips(doc: ProjectDocument): void {
+  for (const clip of doc.clips) persistedClipIds.add(clip.id);
 }
 
 interface ProjectState {
@@ -106,6 +186,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const doc = await api<ProjectDocument>(`/api/projects/${id}`);
+      rememberPersistedClips(doc);
       set({ doc, loading: false });
     } catch (err) {
       set({ loading: false, error: err instanceof Error ? err.message : "load_failed" });
@@ -237,7 +318,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     });
   },
 
-  replaceDoc: (doc) => set({ doc }),
+  replaceDoc: (doc) => {
+    rememberPersistedClips(doc);
+    set({ doc });
+  },
   flush: () => queue.flush(),
 
   assetDuration: (assetId) => {
@@ -250,20 +334,18 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     if (!doc) return;
     const prev = doc.clips.find((clip) => clip.id === id);
     if (!prev) return;
-    const next = { ...prev, ...patch, updatedAt: Date.now() };
+    const persistedPatch = toClipPatch(patch);
+    const next = { ...prev, ...persistedPatch, updatedAt: Date.now() };
     set({ doc: { ...doc, clips: doc.clips.map((clip) => (clip.id === id ? next : clip)) } });
     toneEngine.invalidateSchedule();
-    queue.enqueue({
-      id: `clip:${id}`,
-      run: async (init) => {
-        await api(`/api/clips/${id}`, { method: "PATCH", body: JSON.stringify(patch), ...init });
-      },
-    });
+    clipPatches.set(id, { ...clipPatches.get(id), ...persistedPatch });
+    enqueueClipWrite(id);
     if (recordUndo) {
+      const previous = previousClipPatch(prev, persistedPatch);
       undoStack.push({
         label: "edit clip",
-        undo: () => get().patchClip(id, prev, false),
-        redo: () => get().patchClip(id, patch, false),
+        undo: () => get().patchClip(id, previous, false),
+        redo: () => get().patchClip(id, persistedPatch, false),
       });
     }
   },
@@ -273,12 +355,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     if (!doc) return;
     set({ doc: { ...doc, clips: [...doc.clips, clip] } });
     toneEngine.invalidateSchedule();
-    queue.enqueue({
-      id: `clip-add:${clip.id}`,
-      run: async (init) => {
-        await api(`/api/lanes/${clip.laneId}/clips`, { method: "POST", body: JSON.stringify(clip), ...init });
-      },
-    });
+    enqueueClipWrite(clip.id);
     if (recordUndo) {
       undoStack.push({
         label: "add clip",
@@ -295,14 +372,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     if (removed.length === 0) return;
     set({ doc: { ...doc, clips: doc.clips.filter((clip) => !ids.includes(clip.id)) } });
     toneEngine.invalidateSchedule();
-    for (const id of ids) {
-      queue.enqueue({
-        id: `clip-del:${id}`,
-        run: async (init) => {
-          await api(`/api/clips/${id}`, { method: "DELETE", ...init });
-        },
-      });
-    }
+    for (const id of ids) enqueueClipWrite(id);
     if (recordUndo) {
       undoStack.push({
         label: "delete clips",
@@ -327,16 +397,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     });
     toneEngine.invalidateSchedule();
     for (const clip of after) {
-      queue.enqueue({
-        id: `clip:${clip.id}`,
-        run: async (init) => {
-          await api(`/api/clips/${clip.id}`, {
-            method: "PATCH",
-            body: JSON.stringify({ startBeats: clip.startBeats }),
-            ...init,
-          });
-        },
-      });
+      clipPatches.set(clip.id, { ...clipPatches.get(clip.id), startBeats: clip.startBeats });
+      enqueueClipWrite(clip.id);
     }
     if (recordUndo) {
       undoStack.push({
