@@ -1,0 +1,78 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Bricolage Grotesque", ui-sans-serif, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --color-ink: #090a0c;
+  --color-panel: #12141a;
+  --color-rail: #181b23;
+  --color-line: #2c3140;
+  --color-brass: #d4a056;
+  --color-brass-dim: #8a6a38;
+  --color-ember: #c23b2e;
+  --color-phosphor: #7dcea0;
+  --color-paper: #e6dfd2;
+  --color-mute: #8b8493;
+  --color-lane-music3: #d4a056;
+  --color-lane-acestep: #4aa8a0;
+  --color-lane-synth: #8b6ec9;
+  --color-lane-import: #6d7c93;
+  --color-lane-picture: #c46b7a;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: var(--color-ink);
+  color: var(--color-paper);
+  font-family: var(--font-display);
+}
+
+body {
+  background-image:
+    radial-gradient(1200px 600px at 10% -10%, rgba(212, 160, 86, 0.07), transparent 50%),
+    radial-gradient(900px 500px at 110% 10%, rgba(74, 168, 160, 0.05), transparent 45%),
+    url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.35'/%3E%3C/svg%3E");
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+input,
+textarea {
+  background: #0d0f14;
+  color: var(--color-paper);
+  border: 1px solid var(--color-line);
+  border-radius: 4px;
+}
+
+input:focus,
+textarea:focus {
+  outline: 1px solid var(--color-brass);
+  border-color: var(--color-brass);
+}
+
+.grain-overlay {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  opacity: 0.04;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+.clip-music3 { background: linear-gradient(180deg, #e0b56a, #9a7030); }
+.clip-acestep { background: linear-gradient(180deg, #6cc4bc, #2f7a74); }
+.clip-synth { background: linear-gradient(180deg, #a58de0, #5a428f); }
+.clip-import { background: linear-gradient(180deg, #8a99b0, #465266); }
+.clip-picture { background: linear-gradient(180deg, #d88a97, #7a3d4a); }
