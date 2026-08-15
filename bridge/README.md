@@ -1,8 +1,8 @@
 # clnkrite-bridge
 
-Small FastAPI process that runs on the GPU box. The Cloudflare Worker talks to it — locally at `http://127.0.0.1:8300`, in production through a Cloudflare Tunnel + Access service token.
+Small FastAPI process that runs on the GPU box for **ACE-Step and Demucs only**. Production Music3 does **not** go through this process — the Worker calls `POST /v1/music` on https://h3.clunk.us directly.
 
-Music3 (SGLang-Omni), ACE-Step, and Demucs stay on this machine. The bridge never leaves localhost except via `cloudflared`.
+Leave `BRIDGE_BASE_URL` unset in production. For local ACE-Step/Demucs, point it at `http://127.0.0.1:8300`. Do not point it at h3.clunk.us.
 
 ## Run on :8300
 
@@ -54,6 +54,6 @@ bridge.<domain> → http://127.0.0.1:8300
 
 Create a Cloudflare Access self-hosted app for `bridge.<domain>` with a **service-token** policy. Store the token id/secret as Worker secrets `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET`.
 
-Local `wrangler dev` does **not** need the tunnel: `.dev.vars` sets `BRIDGE_BASE_URL=http://127.0.0.1:8300`.
+Local ACE-Step/Demucs: set `BRIDGE_BASE_URL=http://127.0.0.1:8300` in `.dev.vars`. Production Music3 uses `H3_BASE_URL=https://h3.clunk.us` and Access secrets.
 
-Do not expose SGLang or ACE-Step directly through the tunnel.
+Do not send Music3 generate through this bridge’s `/jobs` API when H3 is configured.

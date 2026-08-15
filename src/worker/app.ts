@@ -31,7 +31,8 @@ import {
   bridgeHealth,
   bridgePutJobSource,
 } from "./bridge";
-import type { Env } from "./env";
+import { isBridgeConfigured, type Env } from "./env";
+import { H3OfflineError, h3CancelJob, h3CreateMusic, h3GetMusic, h3Health } from "./h3";
 import { ingestSucceededJob } from "./ingest";
 import { createD1Store, type Store } from "./store";
 import { parseWavHeader } from "./wav";
@@ -365,33 +366,44 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
     job = await store.createJob(job);
 
     try {
-      const created = await bridgeCreateJob(c.env, { kind: job.kind, params: job.params });
-      job =
-        (await store.updateJob(job.id, {
-          bridgeJobId: created.jobId,
-          status: "queued",
-        })) ?? job;
-      if (job.kind === "demucs_split" && job.bridgeJobId) {
-        const params = job.params as DemucsJobParams;
-        const source = await store.getAsset(params.sourceAssetId);
-        if (!source) throw new Error("source_asset_missing");
-        const obj = await c.env.MEDIA.get(source.r2Key);
-        if (!obj) throw new Error("source_blob_missing");
-        await bridgePutJobSource(c.env, job.bridgeJobId, obj.body);
+      if (job.kind === "music3_generate") {
+        const created = await h3CreateMusic(c.env, job.params as Music3JobParams);
+        job =
+          (await store.updateJob(job.id, {
+            bridgeJobId: created.jobId,
+            status: "queued",
+          })) ?? job;
+      } else {
+        const created = await bridgeCreateJob(c.env, { kind: job.kind, params: job.params });
+        job =
+          (await store.updateJob(job.id, {
+            bridgeJobId: created.jobId,
+            status: "queued",
+          })) ?? job;
+        if (job.kind === "demucs_split" && job.bridgeJobId) {
+          const params = job.params as DemucsJobParams;
+          const source = await store.getAsset(params.sourceAssetId);
+          if (!source) throw new Error("source_asset_missing");
+          const obj = await c.env.MEDIA.get(source.r2Key);
+          if (!obj) throw new Error("source_blob_missing");
+          await bridgePutJobSource(c.env, job.bridgeJobId, obj.body);
+        }
       }
     } catch (err) {
       if (job.bridgeJobId) {
         try {
-          await bridgeCancelJob(c.env, job.bridgeJobId);
+          if (job.kind === "music3_generate") await h3CancelJob(c.env, job.bridgeJobId);
+          else await bridgeCancelJob(c.env, job.bridgeJobId);
         } catch {
-          // The D1 failure is authoritative even if the orphaned bridge job cannot be cancelled.
+          // The D1 failure is authoritative even if the orphaned remote job cannot be cancelled.
         }
       }
-      const offline = err instanceof BridgeOfflineError;
+      const offline =
+        err instanceof H3OfflineError ? err.message : err instanceof BridgeOfflineError ? "bridge_offline" : null;
       job =
         (await store.updateJob(job.id, {
           status: "failed",
-          error: offline ? "bridge_offline" : err instanceof Error ? err.message : "bridge_error",
+          error: offline ?? (err instanceof Error ? err.message : "engine_error"),
         })) ?? job;
     }
     return c.json(job, 201);
@@ -411,6 +423,37 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
     if (!job.bridgeJobId) return c.json(job);
 
     try {
+      if (job.kind === "music3_generate") {
+        const view = await h3GetMusic(c.env, job.bridgeJobId);
+        if (view.status === "running") {
+          if (job.status !== "running") {
+            job = (await store.updateJob(job.id, { status: "running" })) ?? job;
+          } else {
+            const params = job.params as Music3JobParams;
+            const durationSec = Number(params.durationSec ?? 60);
+            if (jobTimedOut(job.updatedAt, durationSec)) {
+              try {
+                await h3CancelJob(c.env, job.bridgeJobId);
+              } catch {
+                // The local timeout remains authoritative if cancellation cannot be confirmed.
+              }
+              job = (await store.updateJob(job.id, { status: "failed", error: "timeout" })) ?? job;
+            }
+          }
+        } else if (view.status === "ingesting") {
+          job = await ingestSucceededJob(c.env, store, job);
+        } else if (view.status === "failed" || view.status === "cancelled") {
+          job =
+            (await store.updateJob(job.id, {
+              status: view.status,
+              error: view.error ?? view.status,
+            })) ?? job;
+        } else if (view.status !== job.status) {
+          job = (await store.updateJob(job.id, { status: view.status })) ?? job;
+        }
+        return c.json({ ...job, queuePosition: view.queuePosition, progress: view.progress });
+      }
+
       const view = await bridgeGetJob(c.env, job.bridgeJobId);
       const mapped = mapBridgeStatus(view.status);
       if (mapped === "running") {
@@ -442,6 +485,9 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
       }
       return c.json({ ...job, queuePosition: view.queuePosition, progress: view.progress });
     } catch (err) {
+      if (err instanceof H3OfflineError) {
+        return c.json({ error: err.message || "h3_offline", job }, 503);
+      }
       if (err instanceof BridgeOfflineError) {
         return c.json({ error: "bridge_offline", job }, 503);
       }
@@ -455,8 +501,12 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
     if (!job) return jsonError(c, 404, "not_found");
     if (job.bridgeJobId) {
       try {
-        await bridgeCancelJob(c.env, job.bridgeJobId);
+        if (job.kind === "music3_generate") await h3CancelJob(c.env, job.bridgeJobId);
+        else await bridgeCancelJob(c.env, job.bridgeJobId);
       } catch (err) {
+        if (err instanceof H3OfflineError) {
+          return c.json({ error: err.message || "h3_offline" }, 503);
+        }
         if (err instanceof BridgeOfflineError) {
           return c.json({ error: "bridge_offline" }, 503);
         }
@@ -471,14 +521,33 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
     if (cached) return c.json(cached.body, cached.status);
     const kvRaw = await c.env.CONFIG.get("engines", "json");
     try {
-      const health = await bridgeHealth(c.env);
+      const h3 = await h3Health(c.env);
+      let aceUp = false;
+      let demucsAvailable = false;
+      let queue = { depth: 0, running: false };
+      if (isBridgeConfigured(c.env)) {
+        try {
+          const bridge = await bridgeHealth(c.env);
+          aceUp = Boolean(bridge.acestep?.up);
+          demucsAvailable = Boolean(bridge.demucs?.available);
+          queue = bridge.queue ?? queue;
+        } catch {
+          // Local ACE-Step / Demucs stay absent when the Python bridge is down.
+        }
+      }
+      const health: EnginesResponse["health"] = {
+        music3: { up: h3.up, model: h3.model },
+        acestep: aceUp ? { up: true } : null,
+        demucs: { available: demucsAvailable },
+        queue,
+      };
       const kvValue = {
         music3: {
-          model: health.music3.model,
-          maxDurationSec: 240,
+          model: h3.model,
+          maxDurationSec: 300,
         },
         acestep: {
-          present: Boolean(health.acestep?.up),
+          present: aceUp,
           defaultSteps: 8,
         },
       };
@@ -489,7 +558,7 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
     } catch {
       const body: EnginesResponse = {
         online: false,
-        error: "bridge_offline",
+        error: "h3_offline",
         health: null,
         kv: kvRaw,
       };

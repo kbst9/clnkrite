@@ -9,6 +9,7 @@ function mockEnv(): Env {
     DB: {} as D1Database,
     MEDIA: { put: async () => undefined, get: async () => null } as unknown as R2Bucket,
     CONFIG: { get: async () => null, put: async () => undefined } as unknown as KVNamespace,
+    H3_BASE_URL: "https://h3.clunk.us",
     BRIDGE_BASE_URL: "http://127.0.0.1:8300",
   };
 }

@@ -1,5 +1,6 @@
 import type { BridgeHealth, BridgeJobView, JobKind, JobParams } from "../shared/types";
-import type { Env } from "./env";
+import { mergeAccessHeaders } from "./access";
+import { isBridgeConfigured, type Env } from "./env";
 
 export class BridgeOfflineError extends Error {
   readonly code = "bridge_offline" as const;
@@ -9,17 +10,9 @@ export class BridgeOfflineError extends Error {
   }
 }
 
-function accessHeaders(env: Env): HeadersInit {
-  const headers: Record<string, string> = { Accept: "application/json" };
-  if (env.CF_ACCESS_CLIENT_ID && env.CF_ACCESS_CLIENT_SECRET) {
-    headers["CF-Access-Client-Id"] = env.CF_ACCESS_CLIENT_ID;
-    headers["CF-Access-Client-Secret"] = env.CF_ACCESS_CLIENT_SECRET;
-  }
-  return headers;
-}
-
 function bridgeUrl(env: Env, path: string): string {
-  const base = (env.BRIDGE_BASE_URL || "http://127.0.0.1:8300").replace(/\/$/, "");
+  if (!isBridgeConfigured(env)) throw new BridgeOfflineError();
+  const base = (env.BRIDGE_BASE_URL ?? "").replace(/\/$/, "");
   return `${base}${path}`;
 }
 
@@ -27,13 +20,11 @@ async function bridgeFetch(env: Env, path: string, init: RequestInit = {}, timeo
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const headers = new Headers(init.headers);
-    const extra = accessHeaders(env);
-    for (const [k, v] of Object.entries(extra)) {
-      if (!headers.has(k)) headers.set(k, v);
-    }
+    const headers = mergeAccessHeaders(env, init.headers);
+    if (!headers.has("Accept")) headers.set("Accept", "application/json");
     return await fetch(bridgeUrl(env, path), { ...init, headers, signal: ctrl.signal });
-  } catch {
+  } catch (err) {
+    if (err instanceof BridgeOfflineError) throw err;
     throw new BridgeOfflineError();
   } finally {
     clearTimeout(timer);
@@ -41,6 +32,7 @@ async function bridgeFetch(env: Env, path: string, init: RequestInit = {}, timeo
 }
 
 export async function bridgeHealth(env: Env): Promise<BridgeHealth> {
+  if (!isBridgeConfigured(env)) throw new BridgeOfflineError();
   const res = await bridgeFetch(env, "/health");
   if (!res.ok) throw new BridgeOfflineError();
   return (await res.json()) as BridgeHealth;

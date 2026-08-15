@@ -1,5 +1,8 @@
-BRIDGE_BASE_URL=http://127.0.0.1:8300
-# Optional Cloudflare Access service-token headers for a deployed Worker
-# talking to the tunneled bridge. Not needed for local wrangler dev.
+H3_BASE_URL=https://h3.clunk.us
+# Optional local Python bridge for ACE-Step / Demucs only.
+# Do not set this to https://h3.clunk.us or example.com.
+# BRIDGE_BASE_URL=http://127.0.0.1:8300
+# Cloudflare Access service-token headers for every request to h3.clunk.us.
+# Set with `wrangler secret put` in production. Do not commit values.
 # CF_ACCESS_CLIENT_ID=
 # CF_ACCESS_CLIENT_SECRET=

@@ -10,6 +10,7 @@ import {
   jobTimeoutSec,
   mapBridgeStatus,
 } from "../src/shared/jobs";
+import { mapH3Status, music3RequestBody } from "../src/worker/h3";
 
 describe("job state mapping", () => {
   it("maps bridge statuses onto the D1 machine", () => {
@@ -18,6 +19,20 @@ describe("job state mapping", () => {
     expect(mapBridgeStatus("succeeded")).toBe("ingesting");
     expect(mapBridgeStatus("failed")).toBe("failed");
     expect(mapBridgeStatus("cancelled")).toBe("cancelled");
+  });
+
+  it("maps H3 completed onto ingesting and clamps Music3 max_duration", () => {
+    expect(mapH3Status("queued")).toBe("queued");
+    expect(mapH3Status("running")).toBe("running");
+    expect(mapH3Status("completed")).toBe("ingesting");
+    expect(mapH3Status("failed")).toBe("failed");
+    expect(mapH3Status("cancelled")).toBe("cancelled");
+    expect(music3RequestBody({ lyrics: "", caption: "  ", seed: 7, durationSec: 400, playheadBeats: 0 })).toEqual({
+      caption: "instrumental",
+      lyrics: "[Instrumental]",
+      max_duration: 300,
+      seed: 7,
+    });
   });
 
   it("treats succeeded/failed/cancelled as terminal", () => {

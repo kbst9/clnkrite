@@ -5,6 +5,8 @@ import { STEM_ROLES } from "../shared/types";
 import type { Asset, Clip, Job, Music3JobParams, StemRole } from "../shared/types";
 import { bridgeGetArtifact } from "./bridge";
 import type { Env } from "./env";
+import { h3GetContent, h3GetMusic } from "./h3";
+import { parseMp3Info } from "./mp3";
 import type { Store } from "./store";
 import { parseWavHeader } from "./wav";
 
@@ -174,8 +176,8 @@ async function putWavAsset(
   const r2Key = `projects/${job.projectId}/audio/${assetId}.wav`;
   await env.MEDIA.put(r2Key, bytes, { httpMetadata: { contentType: "audio/wav" } });
   const t = Date.now();
-  const source = job.kind === "demucs_split" ? "demucs" : job.kind === "acestep_generate" ? "acestep" : "music3";
-  const params = job.params as Music3JobParams;
+  const source = job.kind === "demucs_split" ? "demucs" : "acestep";
+  const params = asRecord(job.params);
   return store.createAsset({
     id: assetId,
     projectId: job.projectId,
@@ -183,10 +185,49 @@ async function putWavAsset(
     r2Key,
     mime: "audio/wav",
     bytes: bytes.byteLength,
-    durationSec: wav?.durationSec ?? (typeof params.durationSec === "number" ? params.durationSec : null),
+    durationSec: wav?.durationSec ?? (typeof params.audioDuration === "number" ? params.audioDuration : null),
     sampleRate: wav?.sampleRate ?? 32000,
     channels: wav?.channels ?? 2,
     source,
+    sourceJobId: job.id,
+    peaksR2Key: null,
+    createdAt: t,
+  });
+}
+
+async function putMusic3Asset(env: Env, store: Store, job: Job): Promise<Asset> {
+  if (!job.bridgeJobId) throw new Error("missing_bridge_job_id");
+  let remoteDuration: number | null = null;
+  try {
+    const view = await h3GetMusic(env, job.bridgeJobId);
+    if (typeof view.durationSec === "number" && view.durationSec > 0) remoteDuration = view.durationSec;
+  } catch {
+    // Content fetch is authoritative; poll metadata is optional for duration.
+  }
+  const bytes = await h3GetContent(env, job.bridgeJobId);
+  const wav = parseWavHeader(bytes);
+  const mp3 = wav ? null : parseMp3Info(bytes);
+  const params = job.params as Music3JobParams;
+  const paramDuration = typeof params.durationSec === "number" && params.durationSec > 0 ? params.durationSec : null;
+  const durationSec = wav?.durationSec ?? mp3?.durationSec ?? remoteDuration ?? paramDuration;
+  const isWav = Boolean(wav);
+  const mime = isWav ? "audio/wav" : "audio/mpeg";
+  const ext = isWav ? "wav" : "mp3";
+  const assetId = assetIdForJob(job.id);
+  const r2Key = `projects/${job.projectId}/audio/${assetId}.${ext}`;
+  await env.MEDIA.put(r2Key, bytes, { httpMetadata: { contentType: mime } });
+  const t = Date.now();
+  return store.createAsset({
+    id: assetId,
+    projectId: job.projectId,
+    kind: "audio",
+    r2Key,
+    mime,
+    bytes: bytes.byteLength,
+    durationSec,
+    sampleRate: wav?.sampleRate ?? mp3?.sampleRate ?? null,
+    channels: wav?.channels ?? mp3?.channels ?? 2,
+    source: "music3",
     sourceJobId: job.id,
     peaksR2Key: null,
     createdAt: t,
@@ -237,14 +278,17 @@ export async function ingestSucceededJob(env: Env, store: Store, job: Job): Prom
   }
 
   try {
-    const storedAsset = await putWavAsset(env, store, current, "output.wav");
+    const storedAsset =
+      current.kind === "music3_generate"
+        ? await putMusic3Asset(env, store, current)
+        : await putWavAsset(env, store, current, "output.wav");
     return finishGenerateFromAsset(store, current, storedAsset);
   } catch (err) {
     const message = err instanceof Error ? err.message : "ingest_failed";
     return (
       (await store.updateJob(current.id, {
         status: "failed",
-        error: message === "bridge_offline" ? "bridge_offline" : message,
+        error: message,
       })) ?? current
     );
   }

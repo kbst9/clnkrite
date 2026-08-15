@@ -10,7 +10,7 @@ This is a **new** Vite + React 19 + Hono Worker app. It copies patterns; it is n
 
 The app runs on **Cloudflare Workers** (SPA assets + Hono `/api`). **D1** is the source of truth. **R2** holds audio/video blobs. **KV** holds runtime engine config. Deploy with **wrangler**.
 
-Music3 / ACE-Step / Demucs stay on the GPU box. The Worker reaches them through **Cloudflare Tunnel + Access + `clnkrite-bridge`** (`bridge/` in this repo). Do not run Music3 on a Worker. Do not install models here.
+Music3 stays on the GPU box. The Worker reaches it through Mediaguy’s existing tunnel **https://h3.clunk.us** (MiniMax Local Media API) plus Cloudflare Access service-token headers. ACE-Step / Demucs are optional via a local `clnkrite-bridge` (`bridge/` in this repo) and are not on that host. Do not run Music3 on a Worker. Do not install models here.
 
 IndexedDB is **cache only** — never authoritative.
 
@@ -41,14 +41,14 @@ npx wrangler d1 migrations apply clnkrite-db --remote
 npx wrangler d1 migrations apply clnkrite-db --local
 ```
 
-Optional production secrets (Worker → tunneled bridge):
+Production secrets (Worker → https://h3.clunk.us):
 
 ```bash
 npx wrangler secret put CF_ACCESS_CLIENT_ID
 npx wrangler secret put CF_ACCESS_CLIENT_SECRET
 ```
 
-Set `vars.BRIDGE_BASE_URL` in `wrangler.jsonc` to `https://bridge.<your-domain>` for production.
+`wrangler.jsonc` vars already set `H3_BASE_URL=https://h3.clunk.us`. Do not invent a new tunnel. Do not point `BRIDGE_BASE_URL` at that host or at example.com.
 
 ## Deploy
 
@@ -66,32 +66,32 @@ Two processes: Vite (UI) and the Worker. The Vite dev server proxies `/api` to `
 
 ```bash
 cp .dev.vars.example .dev.vars
-# .dev.vars already has BRIDGE_BASE_URL=http://127.0.0.1:8300
+# H3_BASE_URL=https://h3.clunk.us — add Access secrets to talk to the live host
 
 npm install
 npm run worker:dev     # wrangler dev — apply local D1 migrations first
 npm run dev            # Vite on :5173
 ```
 
-Bridge (GPU box or same machine):
+Optional local Python bridge (ACE-Step / Demucs only — not Music3):
 
 ```bash
 cd bridge
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-# MUSIC3_BASE_URL defaults to http://127.0.0.1:8000
 uvicorn app:app --host 127.0.0.1 --port 8300
 ```
 
-See `bridge/README.md` for env vars and tunnel notes. Local `wrangler dev` talks to `http://127.0.0.1:8300` — no tunnel required.
+See `docs/runbook.md`. Production Music3 is `POST /v1/music` on https://h3.clunk.us, not the bridge `/jobs` API.
 
 ## Env / secrets
 
 | Name | Where | Purpose |
 |---|---|---|
-| `BRIDGE_BASE_URL` | Worker `vars` / `.dev.vars` | Bridge origin. Local: `http://127.0.0.1:8300`. Prod: tunnel hostname. |
-| `CF_ACCESS_CLIENT_ID` | Worker secret (optional) | Access service-token id. Attached to every bridge fetch when set. |
-| `CF_ACCESS_CLIENT_SECRET` | Worker secret (optional) | Access service-token secret. |
+| `H3_BASE_URL` | Worker `vars` / `.dev.vars` | MiniMax Local Media API origin. Production: `https://h3.clunk.us`. |
+| `BRIDGE_BASE_URL` | Optional `.dev.vars` only | Local ACE-Step / Demucs bridge. Do not set to example.com or h3.clunk.us. |
+| `CF_ACCESS_CLIENT_ID` | Worker secret | Access service-token id. Attached to every H3 fetch when set. |
+| `CF_ACCESS_CLIENT_SECRET` | Worker secret | Access service-token secret. |
 | `DB` | D1 binding | Source of truth. |
 | `MEDIA` | R2 binding | Audio/video/peaks blobs. Never public. |
 | `CONFIG` | KV binding | `engines`, `defaults`, `settings:kevin`. |

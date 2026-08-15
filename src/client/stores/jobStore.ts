@@ -77,7 +77,10 @@ export const useJobStore = create<JobState>((set, get) => ({
         }
         return job;
       } catch (err) {
-        if (err instanceof ApiError && (err.code === "bridge_offline" || err.status === 503)) {
+        if (
+          err instanceof ApiError &&
+          (err.code === "bridge_offline" || err.code === "h3_offline" || err.status === 503)
+        ) {
           useUiStore.getState().setBridge(false, "bridge_offline");
         }
         return null;

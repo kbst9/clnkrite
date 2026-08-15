@@ -34,6 +34,6 @@
     { "pattern": "rite.clnkr.dev", "custom_domain": true }
   ],
   "vars": {
-    "BRIDGE_BASE_URL": "https://bridge.example.com"
+    "H3_BASE_URL": "https://h3.clunk.us"
   }
 }

@@ -14,6 +14,7 @@ function mockEnv(): Env {
       get: async () => null,
       put: async () => undefined,
     } as unknown as KVNamespace,
+    H3_BASE_URL: "https://h3.clunk.us",
     BRIDGE_BASE_URL: "http://127.0.0.1:8300",
   };
 }

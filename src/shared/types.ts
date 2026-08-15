@@ -236,7 +236,7 @@ export interface BridgeHealth {
 
 export interface EnginesResponse {
   online: boolean;
-  error?: "bridge_offline";
+  error?: "bridge_offline" | "h3_offline";
   health: BridgeHealth | null;
   kv: unknown;
 }

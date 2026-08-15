@@ -15,27 +15,39 @@ npm run test
 npm run build
 ```
 
-## BRIDGE_BASE_URL
+## Music3 host (H3)
 
-Stays in Worker vars. Do not bake the tunnel hostname into source.
+Production Music3 is the MiniMax Local Media API already on **https://h3.clunk.us** (Mediaguy’s tunnel). The Worker talks to it directly. Do not invent a new tunnel.
 
-- Local wrangler dev: copy .dev.vars.example to .dev.vars. Value is http://127.0.0.1:8300
-- Production: wrangler.jsonc vars.BRIDGE_BASE_URL. Placeholder is https://bridge.example.com — REPLACE_AFTER_CREATE with the real tunnel hostname (do not invent one). Also `wrangler secret put CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET`. App-hostname Access is a Zero Trust dashboard step, not code.
+- `POST /v1/music` → 202 job
+- `GET /v1/music/{id}` poll until `completed`
+- `GET /v1/music/{id}/content` → stereo MP3
+- `DELETE /v1/jobs/{id}`
+- Liveness: `GET /v1/health` (not the Python bridge `GET /health`)
 
-Local dev never needs the tunnel. Production secrets CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET are set with wrangler secret put.
+`wrangler.jsonc` vars: `H3_BASE_URL=https://h3.clunk.us`. Every request must send `CF-Access-Client-Id` and `CF-Access-Client-Secret` (same secret names Inspire Flow uses). Set them with `wrangler secret put`. Do not put secret values in git or docs.
+
+This host is **not** the clnkrite Python bridge and **not** raw SGLang. Do not send Music3 through `POST /jobs`, `GET /health`, or `POST /v1/audio/speech`. Do not call `/v1/videos*` from this Worker.
+
+ACE-Step and Demucs are not on this tunnel. They stay absent unless a **local** Python bridge is configured separately.
+
+## Optional local bridge (ACE-Step / Demucs)
+
+`BRIDGE_BASE_URL` is optional and only for a future/local Demucs or ACE-Step process. Leave it unset in production. If you set it for local work, use something like `http://127.0.0.1:8300`. Do **not** point it at `example.com` or at `https://h3.clunk.us`.
+
+App-hostname Access on rite.clnkr.dev is a Zero Trust dashboard step, not code.
 
 ## Start order on the GPU box
 
-1. SGLang-Omni / Music3 on port 8000 (already running). Confirm GET /v1/models.
-2. ACE-Step 1.5 optional on port 8001. Confirm GET /health. The Add-lane drawer hides ACE-Step if down.
-3. Demucs optional, pin demucs==4.0.1, model htdemucs. First run downloads weights (~2GB).
-4. Bridge: cd bridge && python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && uvicorn app:app --host 127.0.0.1 --port 8300
-5. Tunnel (production only): map bridge.<domain> to localhost:8300. Outbound-only connector.
-6. Build the SPA then deploy with wrangler. Locally run the worker and the Vite app together.
+1. MiniMax Local Media API (H3 + Music3) already published at https://h3.clunk.us. Confirm `GET /v1/health` with Access headers.
+2. ACE-Step 1.5 optional on a local port. The Add-lane drawer hides ACE-Step if the local bridge does not report it.
+3. Demucs optional, pin demucs==4.0.1, model htdemucs. First run downloads weights (~2GB). Not on h3.clunk.us.
+4. Optional local bridge only if you need ACE-Step/Demucs: `cd bridge && python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && uvicorn app:app --host 127.0.0.1 --port 8300`
+5. Build the SPA then deploy with wrangler. Kevin sets Access secrets and wrangler-deploy.
 
 ## Rotate the Access service token
 
-Create a new service token in Zero Trust. Point the bridge hostname policy at it. Store the new id and secret as Worker secrets. Confirm GET /api/engines is online.
+Create a new service token in Zero Trust. Point the **h3.clunk.us** Access app at it. Store the new id and secret as Worker secrets `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET`. Confirm GET /api/engines is online (Music3 up, ACE-Step absent unless a local bridge is configured).
 
 ## D1 export
 
@@ -43,5 +55,4 @@ Export clnkrite-db with wrangler d1 export --remote --output backup.sql. Invento
 
 ## Cancel
 
-Cancel means stop waiting. ACE-Step has no cancel API. Music3 is aborted by dropping the HTTP request. The GPU may finish; the result is discarded.
-
+Cancel means stop waiting. Music3 is `DELETE /v1/jobs/{id}` on the H3 host. ACE-Step (local bridge only) has no cancel API. The GPU may finish; the result is discarded.

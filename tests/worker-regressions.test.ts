@@ -45,6 +45,7 @@ function mockEnv(): Env {
       get: async () => null,
       put: async () => undefined,
     } as unknown as KVNamespace,
+    H3_BASE_URL: "https://h3.clunk.us",
     BRIDGE_BASE_URL: "http://bridge.invalid",
   };
 }
@@ -156,7 +157,11 @@ describe("worker regressions", () => {
     await store.updateJob("job-one", { status: "running", updatedAt: old });
     const timedOutResponse = await app.request("/api/jobs/job-one", {}, env);
     expect((await timedOutResponse.json()) as Job).toMatchObject({ status: "failed", error: "timeout" });
-    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/jobs/bridge-one/cancel"))).toBe(true);
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) => String(url).endsWith("/v1/jobs/bridge-one") && (init as RequestInit | undefined)?.method === "DELETE",
+      ),
+    ).toBe(true);
   });
 
   it("deleting one memory-store project leaves another projects clips intact", async () => {
@@ -568,3 +573,160 @@ describe("demucs source upload order", () => {
     expect(calls[1]).toMatch(/POST .*\/jobs\/bridge-demucs\/source$/);
   });
 });
+
+function h3OnlyEnv(): Env {
+  return {
+    DB: {} as D1Database,
+    MEDIA: {
+      put: async () => undefined,
+      get: async () => null,
+    } as unknown as R2Bucket,
+    CONFIG: {
+      get: async () => null,
+      put: async () => undefined,
+    } as unknown as KVNamespace,
+    H3_BASE_URL: "https://h3.clunk.us",
+    CF_ACCESS_CLIENT_ID: "access-client-id",
+    CF_ACCESS_CLIENT_SECRET: "access-client-secret",
+  };
+}
+
+function headerMap(init?: RequestInit): Record<string, string> {
+  const headers = new Headers(init?.headers);
+  const out: Record<string, string> = {};
+  headers.forEach((value, key) => {
+    out[key.toLowerCase()] = value;
+  });
+  return out;
+}
+
+describe("H3 Music3 tunnel", () => {
+  it("probes GET /v1/health and keeps ACE-Step absent when only H3 is configured", async () => {
+    const store = createMemoryStore();
+    const app = createApp({ storeFactory: () => store });
+    const env = h3OnlyEnv();
+    const calls: Array<{ method: string; url: string; headers: Record<string, string> }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        calls.push({ method: init?.method ?? "GET", url, headers: headerMap(init) });
+        if (url === "https://h3.clunk.us/v1/health") {
+          return new Response(JSON.stringify({ status: "ok" }), { status: 200 });
+        }
+        return new Response("no", { status: 404 });
+      }),
+    );
+
+    const response = await app.request("/api/engines", {}, env);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      online: boolean;
+      health: { music3: { up: boolean }; acestep: { up: boolean } | null; demucs: { available: boolean } };
+    };
+    expect(body.online).toBe(true);
+    expect(body.health.music3.up).toBe(true);
+    expect(body.health.acestep).toBeNull();
+    expect(body.health.demucs.available).toBe(false);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ method: "GET", url: "https://h3.clunk.us/v1/health" });
+    expect(calls[0]?.headers["cf-access-client-id"]).toBe("access-client-id");
+    expect(calls[0]?.headers["cf-access-client-secret"]).toBe("access-client-secret");
+    expect(calls.some((call) => call.url.endsWith("/health") && !call.url.includes("/v1/health"))).toBe(false);
+  });
+
+  it("creates Music3 via POST /v1/music, polls, then ingests MP3 from /content", async () => {
+    const store = createMemoryStore();
+    const app = createApp({ storeFactory: () => store });
+    const env = h3OnlyEnv();
+    const puts: Array<{ key: string; type?: string }> = [];
+    env.MEDIA = {
+      put: async (key: string, _value: unknown, options?: { httpMetadata?: { contentType?: string } }) => {
+        puts.push({ key, type: options?.httpMetadata?.contentType });
+      },
+      get: async () => null,
+    } as unknown as R2Bucket;
+
+    const project = await store.createProject({ title: "H3 Music" });
+    const lane = await store.createLane(project.id, { kind: "music3", arm: true });
+    const mp3 = new Uint8Array([0xff, 0xfb, 0x90, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    const calls: Array<{ method: string; url: string; headers: Record<string, string>; body?: string }> = [];
+    let musicStatus = "queued";
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        calls.push({
+          method,
+          url,
+          headers: headerMap(init),
+          body: typeof init?.body === "string" ? init.body : undefined,
+        });
+        if (url === "https://h3.clunk.us/v1/music" && method === "POST") {
+          return new Response(JSON.stringify({ id: "h3-job-1", status: "queued" }), { status: 202 });
+        }
+        if (url === "https://h3.clunk.us/v1/music/h3-job-1" && method === "GET") {
+          return new Response(JSON.stringify({ id: "h3-job-1", status: musicStatus }), { status: 200 });
+        }
+        if (url === "https://h3.clunk.us/v1/music/h3-job-1/content") {
+          return new Response(mp3, { status: 200, headers: { "Content-Type": "audio/mpeg" } });
+        }
+        return new Response("no", { status: 404 });
+      }),
+    );
+
+    const createdRes = await app.request(
+      `/api/projects/${project.id}/jobs`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "music3_generate",
+          laneId: lane!.id,
+          params: { lyrics: "[Verse]\nla", caption: "warm guitar", seed: 9, durationSec: 45, playheadBeats: 2 },
+        }),
+      },
+      env,
+    );
+    expect(createdRes.status).toBe(201);
+    const created = (await createdRes.json()) as Job;
+    expect(created.status).toBe("queued");
+    expect(created.bridgeJobId).toBe("h3-job-1");
+    const createCall = calls.find((call) => call.url.endsWith("/v1/music") && call.method === "POST");
+    expect(createCall?.headers["cf-access-client-id"]).toBe("access-client-id");
+    expect(createCall?.headers["cf-access-client-secret"]).toBe("access-client-secret");
+    expect(JSON.parse(createCall?.body ?? "{}")).toMatchObject({
+      caption: "warm guitar",
+      lyrics: "[Verse]\nla",
+      max_duration: 45,
+      seed: 9,
+    });
+    expect(calls.some((call) => call.url.includes("/v1/audio/speech"))).toBe(false);
+    expect(calls.some((call) => /\/jobs$/.test(call.url) && !call.url.includes("/v1/jobs"))).toBe(false);
+
+    const queued = await app.request(`/api/jobs/${created.id}`, {}, env);
+    expect((await queued.json()) as Job).toMatchObject({ status: "queued" });
+
+    musicStatus = "completed";
+    const done = await app.request(`/api/jobs/${created.id}`, {}, env);
+    const finished = (await done.json()) as Job;
+    expect(finished.status).toBe("succeeded");
+    expect(finished.resultAssetIds).toEqual([`job-${created.id}-asset`]);
+
+    const asset = (await store.getDocument(project.id))?.assets[0];
+    expect(asset).toMatchObject({
+      mime: "audio/mpeg",
+      durationSec: 45,
+      source: "music3",
+      channels: 2,
+    });
+    expect(asset?.r2Key.endsWith(".mp3")).toBe(true);
+    expect(puts[0]?.type).toBe("audio/mpeg");
+    expect(calls.some((call) => call.url.endsWith("/v1/music/h3-job-1/content"))).toBe(true);
+    expect(calls.every((call) => call.headers["cf-access-client-id"] === "access-client-id")).toBe(true);
+    expect(calls.every((call) => call.headers["cf-access-client-secret"] === "access-client-secret")).toBe(true);
+  });
+});
+
