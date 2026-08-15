@@ -1,0 +1,37 @@
+clnkrite
+Copyright (C) 2026 Kevin
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+See the LICENSE file for the full AGPL-3.0-or-later text.
+
+This is a new application that copies patterns (and, where noted, code
+fragments) from the following works. It is not a fork of either project.
+
+========================================================================
+ACE-Step-DAW
+https://github.com/ace-step/ACE-Step-DAW
+License: GNU Affero General Public License v3.0 or later
+
+clnkrite copies architectural patterns from ACE-Step-DAW: the
+store / engine / services / components/{timeline,transport,generation}
+layering, Zustand store shapes, transport-hook structure, and
+generation-drawer UX. Any copied or adapted AGPL fragments remain
+under AGPL-3.0-or-later, which is also the license of this program.
+========================================================================
+
+========================================================================
+waveform-playlist (including @waveform-playlist/engine / dawcore)
+https://github.com/naomiaro/waveform-playlist
+License: MIT
+
+Copyright (c) Naomi Aro and contributors
+
+clnkrite copies clip-model and interaction patterns: the non-destructive
+cue-in / cue-out crop model, timeline offset, move/trim/split math, and
+peak-rendering approach. MIT-licensed code may be copied verbatim where
+useful; the MIT notice is preserved here.
+========================================================================

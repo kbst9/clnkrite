@@ -1,0 +1,39 @@
+{
+  "name": "clnkrite",
+  "workers_dev": true,
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-08-01",
+  "assets": {
+    "directory": "./dist/client",
+    "not_found_handling": "single-page-application"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "clnkrite-db",
+      "database_id": "59afeed0-700e-49b7-82da-973aefcc5da5",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MEDIA",
+      "bucket_name": "clnkrite-media"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "CONFIG",
+      "id": "62950c6ce4bc447ba3b863a518b0ec88"
+    }
+  ],
+  "alias": {
+    "@shared": "./src/shared"
+  },
+  "routes": [
+    { "pattern": "rite.clnkr.dev", "custom_domain": true }
+  ],
+  "vars": {
+    "H3_BASE_URL": "https://h3.clunk.us"
+  }
+}

@@ -1,0 +1,143 @@
+@import "tailwindcss";
+
+@theme {
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --font-sans: "IBM Plex Sans", ui-sans-serif, sans-serif;
+
+  --color-bg0: #050607;
+  --color-bg1: #0a0c0e;
+  --color-bg2: #101317;
+  --color-bg3: #161a1f;
+  --color-stripe: #07090a;
+
+  --color-line: #22282e;
+  --color-line-strong: #333b44;
+
+  --color-fg: #d6dde3;
+  --color-fg-dim: #8a949d;
+  --color-fg-faint: #545e66;
+
+  --color-ok: #3fb950;
+  --color-warn: #d29922;
+  --color-alert: #f2555a;
+  --color-idle: #6e7681;
+  --color-accent: #e8c268;
+
+  --color-lane-music3: #c9a227;
+  --color-lane-acestep: #3f9d94;
+  --color-lane-synth: #8b7ec9;
+  --color-lane-import: #7d8ca0;
+  --color-lane-picture: #b3616f;
+
+  --radius-0: 0px;
+  --radius-1: 2px;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: var(--color-bg0);
+  color: var(--color-fg);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  border-radius: 0;
+}
+
+input,
+textarea,
+select {
+  background: var(--color-bg2);
+  color: var(--color-fg);
+  border: 1px solid var(--color-line);
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  outline: 1px solid var(--color-line-strong);
+  border-color: var(--color-line-strong);
+}
+
+button {
+  background: transparent;
+  color: inherit;
+}
+
+.label {
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-fg-faint);
+}
+
+.ctrl {
+  height: 24px;
+  padding: 0 8px;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border: 1px solid var(--color-line);
+  color: var(--color-fg-dim);
+}
+
+.ctrl-on {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.ctrl-accent {
+  height: 28px;
+  padding: 0 12px;
+  background: var(--color-accent);
+  color: var(--color-bg0);
+  border: 1px solid var(--color-accent);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.ctrl-accent:disabled {
+  opacity: 0.4;
+}
+
+.sq {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+}
+
+.reticle {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border-color: var(--color-accent);
+  border-style: solid;
+}
+
+.clip-body {
+  background: var(--color-bg2);
+  border: 1px solid;
+}
+
+.clip-overlap {
+  background: color-mix(in srgb, var(--color-bg2) 60%, transparent);
+}
