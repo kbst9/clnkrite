@@ -9,6 +9,5 @@ if (!root) throw new Error("root missing");
 createRoot(root).render(
   <StrictMode>
     <App />
-    <div className="grain-overlay" />
   </StrictMode>,
 );

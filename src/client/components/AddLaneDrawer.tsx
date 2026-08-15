@@ -5,12 +5,20 @@ import { useTransportStore } from "../stores/transportStore";
 import { useUiStore } from "../stores/uiStore";
 
 const SOURCES: Array<{ kind: LaneKind; title: string; blurb: string }> = [
-  { kind: "music3", title: "Music3", blurb: "Full-mix generate on Kevin's GPU. Writes the whole band." },
-  { kind: "acestep", title: "ACE-Step", blurb: "Second local engine. Hidden unless the bridge reports it." },
-  { kind: "synth", title: "Synth", blurb: "Tone.js instrument. Double-click the lane to drop a pattern clip." },
-  { kind: "import", title: "Import", blurb: "Drop a vocal or stem. wav / mp3 / flac / m4a / ogg." },
-  { kind: "picture", title: "Picture", blurb: "One video lane, locked to the transport. Adding replaces." },
+  { kind: "music3", title: "MUSIC3", blurb: "Full-mix generate on the local GPU." },
+  { kind: "acestep", title: "ACE-STEP", blurb: "Second local engine. Hidden unless present." },
+  { kind: "synth", title: "SYNTH", blurb: "Tone.js. Double-click the lane to drop a pattern." },
+  { kind: "import", title: "IMPORT", blurb: "Vocal or stem. wav / mp3 / flac / m4a / ogg." },
+  { kind: "picture", title: "PICTURE", blurb: "One video lane, locked to transport." },
 ];
+
+const STRIPE: Record<LaneKind, string> = {
+  music3: "bg-lane-music3",
+  acestep: "bg-lane-acestep",
+  synth: "bg-lane-synth",
+  import: "bg-lane-import",
+  picture: "bg-lane-picture",
+};
 
 function readMediaDuration(file: File): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -93,25 +101,25 @@ export function AddLaneDrawer() {
   }
 
   return (
-    <aside className="absolute inset-y-0 right-0 z-20 w-[380px] border-l border-line bg-panel p-5 shadow-2xl">
-      <div className="mb-4 flex items-baseline justify-between">
-        <h2 className="text-xl font-semibold">Add a lane</h2>
-        <button type="button" className="font-mono text-xs text-mute" onClick={close}>
-          close
+    <aside className="absolute inset-y-0 right-0 z-20 w-[380px] border-l border-line bg-bg1">
+      <div className="flex h-8 items-center justify-between border-b border-line px-3">
+        <h2 className="text-[10px] font-medium uppercase tracking-[0.08em] text-fg-faint">ADD LANE</h2>
+        <button type="button" className="ctrl h-6 px-2" onClick={close}>
+          ESC ×
         </button>
       </div>
-      <ul className="space-y-3">
+      <ul>
         {SOURCES.map((src) => {
           const blocked =
             (src.kind === "music3" && (bridgeOnline === false || !music3Up)) ||
             (src.kind === "acestep" && !acestepPresent);
           const reason =
             src.kind === "music3" && bridgeOnline === false
-              ? "GPU bridge offline"
+              ? "GPU BRIDGE OFFLINE"
               : src.kind === "music3" && !music3Up
-                ? "Music3 not reported up"
+                ? "MUSIC3 NOT UP"
                 : src.kind === "acestep"
-                  ? "ACE-Step not present"
+                  ? "ACE-STEP NOT PRESENT"
                   : "";
           return (
             <li key={src.kind}>
@@ -122,17 +130,20 @@ export function AddLaneDrawer() {
                   if (src.kind === "import") fileInput.current?.click();
                   else void add(src.kind);
                 }}
-                className="w-full rounded-md border border-line bg-rail px-4 py-3 text-left hover:border-brass/50 disabled:opacity-40"
+                className="flex h-9 w-full items-center gap-2 border-b border-line px-3 text-left hover:bg-bg3 disabled:opacity-40"
               >
-                <div className="font-semibold">{src.title}</div>
-                <div className="text-sm text-mute">{blocked ? reason : src.blurb}</div>
+                <span className={`h-4 w-[3px] ${STRIPE[src.kind]}`} />
+                <span className="w-24 text-[12px] font-semibold">{src.title}</span>
+                <span className={`flex-1 text-[12px] ${blocked ? "text-alert" : "text-fg-dim"}`}>
+                  {blocked ? reason : src.blurb}
+                </span>
               </button>
             </li>
           );
         })}
       </ul>
-      <label className="mt-6 block rounded-md border border-dashed border-line px-4 py-6 text-center text-sm text-mute hover:border-brass">
-        {uploading ? "Importing…" : "Import audio or video"}
+      <label className="mx-3 mt-4 block border border-dashed border-line px-3 py-4 text-center text-[12px] text-fg-dim hover:border-line-strong">
+        {uploading ? "IMPORTING…" : "IMPORT AUDIO OR VIDEO"}
         <input
           ref={fileInput}
           type="file"
@@ -145,7 +156,7 @@ export function AddLaneDrawer() {
           }}
         />
       </label>
-      {error && <p className="mt-3 font-mono text-xs text-ember">{error}</p>}
+      {error && <p className="mt-3 px-3 font-mono text-[12px] text-alert">{error}</p>}
     </aside>
   );
 }

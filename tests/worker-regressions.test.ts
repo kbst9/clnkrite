@@ -387,3 +387,184 @@ describe("stem explode ingest", () => {
     expect(doc?.clips.filter((clip) => childIds.has(clip.laneId)).every((clip) => clip.id.includes("explode-two"))).toBe(true);
   });
 });
+
+describe("peaks GET", () => {
+  it("serves stored peaks and 404s when the sidecar is missing", async () => {
+    const store = createMemoryStore();
+    const app = createApp({ storeFactory: () => store });
+    const project = await store.createProject({ title: "Peaks" });
+    const peaks = new Uint8Array([1, 10, 0, 0, 20]);
+    await store.createAsset({
+      id: "with-peaks",
+      projectId: project.id,
+      kind: "audio",
+      r2Key: "a.wav",
+      mime: "audio/wav",
+      bytes: 44,
+      durationSec: 1,
+      sampleRate: 8000,
+      channels: 1,
+      source: "music3",
+      sourceJobId: null,
+      peaksR2Key: "projects/p/peaks/with-peaks.peaks.bin",
+      createdAt: Date.now(),
+    });
+    await store.createAsset({
+      id: "no-peaks",
+      projectId: project.id,
+      kind: "audio",
+      r2Key: "b.wav",
+      mime: "audio/wav",
+      bytes: 44,
+      durationSec: 1,
+      sampleRate: 8000,
+      channels: 1,
+      source: "import",
+      sourceJobId: null,
+      peaksR2Key: null,
+      createdAt: Date.now(),
+    });
+    const env = mockEnv();
+    env.MEDIA = {
+      get: async (key: string) => {
+        if (key.endsWith("with-peaks.peaks.bin")) return { body: peaks, etag: "p", httpEtag: '"p"' };
+        return null;
+      },
+    } as unknown as R2Bucket;
+
+    const hit = await app.request("/api/assets/with-peaks/peaks", {}, env);
+    expect(hit.status).toBe(200);
+    expect([...new Uint8Array(await hit.arrayBuffer())]).toEqual([1, 10, 0, 0, 20]);
+
+    const miss = await app.request("/api/assets/no-peaks/peaks", {}, env);
+    expect(miss.status).toBe(404);
+    expect(await miss.json()).toEqual({ error: "peaks_missing" });
+  });
+});
+
+describe("ingesting recovery", () => {
+  it("reclaims a stale ingesting job and finishes from the existing asset", async () => {
+    const store = createMemoryStore();
+    const app = createApp({ storeFactory: () => store });
+    const env = mockEnv();
+    const project = await store.createProject({ title: "Stale ingest" });
+    const lane = await store.createLane(project.id, { kind: "music3", arm: true });
+    const stale = Date.now() - 61_000;
+    const job = await store.createJob(
+      jobRecord(project.id, lane!.id, {
+        status: "ingesting",
+        createdAt: stale,
+        updatedAt: stale,
+      }),
+    );
+    await store.createAsset({
+      id: `job-${job.id}-asset`,
+      projectId: project.id,
+      kind: "audio",
+      r2Key: "out.wav",
+      mime: "audio/wav",
+      bytes: 44,
+      durationSec: 1,
+      sampleRate: 8000,
+      channels: 1,
+      source: "music3",
+      sourceJobId: job.id,
+      peaksR2Key: null,
+      createdAt: stale,
+    });
+
+    const response = await app.request("/api/jobs/job-one", {}, env);
+    const body = (await response.json()) as Job;
+    expect(body.status).toBe("succeeded");
+    expect(body.resultAssetIds).toEqual([`job-${job.id}-asset`]);
+    const doc = await store.getDocument(project.id);
+    expect(doc?.clips).toHaveLength(1);
+  });
+
+  it("does not steal a fresh ingesting claim", async () => {
+    const store = createMemoryStore();
+    const claimed = await store.createJob(
+      jobRecord("p", "l", { id: "fresh", status: "ingesting", updatedAt: Date.now() }),
+    );
+    const again = await store.claimJobForIngest(claimed.id);
+    expect(again.claimed).toBe(false);
+    expect(again.job?.status).toBe("ingesting");
+  });
+});
+
+describe("demucs source upload order", () => {
+  it("creates the bridge job then POSTs /source (upload-then-enqueue on the bridge)", async () => {
+    const store = createMemoryStore();
+    const app = createApp({ storeFactory: () => store });
+    const project = await store.createProject({ title: "Explode" });
+    const lane = await store.createLane(project.id, { kind: "music3", name: "Mix", arm: true });
+    const now = Date.now();
+    await store.createAsset({
+      id: "mix-src",
+      projectId: project.id,
+      kind: "audio",
+      r2Key: "mix.wav",
+      mime: "audio/wav",
+      bytes: 8,
+      durationSec: 1,
+      sampleRate: 8000,
+      channels: 1,
+      source: "music3",
+      sourceJobId: "gen",
+      peaksR2Key: null,
+      createdAt: now,
+    });
+    await store.createClip({
+      id: "mix-clip",
+      laneId: lane!.id,
+      assetId: "mix-src",
+      startBeats: 0,
+      lengthBeats: 4,
+      cueInSec: 0,
+      fadeInSec: 0,
+      fadeOutSec: 0,
+      gainDb: 0,
+      synthPattern: null,
+      label: "mix",
+      createdAt: now,
+      updatedAt: now,
+    });
+    const calls: string[] = [];
+    const wav = new Uint8Array([1, 2, 3, 4]);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        calls.push(`${init?.method ?? "GET"} ${url}`);
+        if (url.endsWith("/jobs") && init?.method === "POST") {
+          return new Response(JSON.stringify({ jobId: "bridge-demucs" }), { status: 200 });
+        }
+        if (url.endsWith("/jobs/bridge-demucs/source")) {
+          return new Response(JSON.stringify({ ok: "stored" }), { status: 200 });
+        }
+        return new Response("no", { status: 404 });
+      }),
+    );
+    const env = mockEnv();
+    env.MEDIA = {
+      get: async () => ({ body: wav }),
+      put: async () => undefined,
+    } as unknown as R2Bucket;
+
+    const response = await app.request(
+      `/api/projects/${project.id}/jobs`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "demucs_split",
+          params: { sourceAssetId: "mix-src", sourceClipId: "mix-clip", playheadBeats: 0 },
+        }),
+      },
+      env,
+    );
+    expect(response.status).toBe(201);
+    expect(calls[0]).toMatch(/POST .*\/jobs$/);
+    expect(calls[1]).toMatch(/POST .*\/jobs\/bridge-demucs\/source$/);
+  });
+});

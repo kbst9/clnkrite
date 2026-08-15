@@ -124,9 +124,23 @@ def _load_scratch_jobs() -> list[str]:
         job["task"] = None
         jobs[dest.name] = job
         _persist_job(job)
-        if job.get("status") == "queued":
+        if job.get("status") == "queued" and _ready_to_enqueue(job, dest):
             queued.append(dest.name)
     return queued
+
+
+def _ready_to_enqueue(job: dict[str, Any], dest: Path | None = None) -> bool:
+    """Demucs jobs must have a source WAV (or sourceUrl) before they enter the GPU queue.
+
+    The Worker creates the job, then POSTs /jobs/{id}/source. Enqueueing on create
+    races the serial worker and fails with missing_source whenever the GPU is idle.
+    """
+    if job.get("kind") != "demucs_split":
+        return True
+    if (job.get("params") or {}).get("sourceUrl"):
+        return True
+    folder = dest if dest is not None else SCRATCH / str(job["id"])
+    return (folder / "input.wav").is_file()
 
 
 def _prune_scratch() -> None:
@@ -410,7 +424,7 @@ async def worker_loop() -> None:
     while True:
         job_id = await queue.get()
         job = jobs.get(job_id)
-        if not job or job["status"] == "cancelled":
+        if not job or job["status"] != "queued":
             queue.task_done()
             continue
         job["status"] = "running"
@@ -478,7 +492,8 @@ async def create_job(body: dict[str, Any]) -> dict[str, str]:
         "task": None,
     }
     _persist_job(jobs[job_id])
-    await queue.put(job_id)
+    if _ready_to_enqueue(jobs[job_id]):
+        await queue.put(job_id)
     return {"jobId": job_id}
 
 
@@ -543,6 +558,8 @@ async def put_source(job_id: str, request: Request) -> dict[str, str]:
     (dest / "input.wav").write_bytes(body)
     job["updatedAt"] = _now()
     _persist_job(job)
+    if job.get("status") == "queued" and _ready_to_enqueue(job, dest):
+        await queue.put(job_id)
     return {"ok": "stored"}
 
 

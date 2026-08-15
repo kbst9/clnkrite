@@ -20,7 +20,7 @@ npm run build
 Stays in Worker vars. Do not bake the tunnel hostname into source.
 
 - Local wrangler dev: copy .dev.vars.example to .dev.vars. Value is http://127.0.0.1:8300
-- Production: wrangler.jsonc vars.BRIDGE_BASE_URL. Placeholder is https://bridge.example.com — REPLACE_AFTER_CREATE with https://bridge.<your-domain>
+- Production: wrangler.jsonc vars.BRIDGE_BASE_URL. Placeholder is https://bridge.example.com — REPLACE_AFTER_CREATE with the real tunnel hostname (do not invent one). Also `wrangler secret put CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET`. App-hostname Access is a Zero Trust dashboard step, not code.
 
 Local dev never needs the tunnel. Production secrets CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET are set with wrangler secret put.
 

@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { isTerminalJobStatus, jobTimedOut, jobTimeoutSec, mapBridgeStatus } from "../src/shared/jobs";
+import {
+  formatElapsed,
+  ingestClaimStale,
+  INGEST_STALE_MS,
+  isTerminalJobStatus,
+  jobKindLabel,
+  jobStateLabel,
+  jobTimedOut,
+  jobTimeoutSec,
+  mapBridgeStatus,
+} from "../src/shared/jobs";
 
 describe("job state mapping", () => {
   it("maps bridge statuses onto the D1 machine", () => {
@@ -27,5 +37,19 @@ describe("job state mapping", () => {
     const start = 1_000_000;
     expect(jobTimedOut(start, 10, start + 799_000)).toBe(false);
     expect(jobTimedOut(start, 10, start + 800_001)).toBe(true);
+  });
+
+  it("treats ingesting as stale after the 60 s window", () => {
+    const start = 5_000_000;
+    expect(ingestClaimStale(start, start + INGEST_STALE_MS - 1)).toBe(false);
+    expect(ingestClaimStale(start, start + INGEST_STALE_MS)).toBe(true);
+  });
+
+  it("labels job kind, state, and elapsed for the status strip", () => {
+    expect(jobKindLabel("music3_generate")).toBe("MUSIC3");
+    expect(jobKindLabel("demucs_split")).toBe("DEMUCS");
+    expect(jobStateLabel("ingesting")).toBe("INGEST");
+    expect(jobStateLabel("running")).toBe("RUN");
+    expect(formatElapsed(102_000)).toBe("01:42");
   });
 });

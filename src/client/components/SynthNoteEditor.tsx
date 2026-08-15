@@ -24,15 +24,15 @@ export function SynthNoteEditor() {
   const steps = Math.max(16, Math.ceil(clip.lengthBeats * 4));
 
   return (
-    <div className="border-t border-line bg-panel px-4 py-3">
-      <div className="mb-2 font-mono text-[10px] uppercase tracking-widest text-mute">
-        Mini note editor · {lane.name} · click to place
+    <div className="border-t border-line bg-bg1 px-3 py-2">
+      <div className="mb-1 text-[10px] font-medium uppercase tracking-[0.08em] text-fg-faint">
+        NOTE EDITOR · {lane.name} · CLICK TO PLACE
       </div>
       <div className="overflow-x-auto">
         <div className="inline-block">
           {PIANO_NOTES.map((note) => (
             <div key={note} className="flex h-4">
-              <span className="w-8 font-mono text-[9px] text-mute">{note}</span>
+              <span className="w-8 text-[10px] text-fg-faint">{note}</span>
               {Array.from({ length: steps }, (_, i) => {
                 const timeBeats = i * 0.25;
                 const on = notes.some((item) => item.note === note && Math.abs(item.timeBeats - timeBeats) < 0.01);
@@ -40,7 +40,7 @@ export function SynthNoteEditor() {
                   <button
                     key={i}
                     type="button"
-                    className={`h-4 border border-line/60 ${on ? "bg-lane-synth" : "bg-ink"}`}
+                    className={`h-4 border border-line ${on ? "bg-lane-synth" : "bg-bg0"}`}
                     style={{ width: zoom }}
                     onClick={() => toggleNote(note, timeBeats)}
                   />

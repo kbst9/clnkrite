@@ -21,6 +21,10 @@ import { undoStack } from "../lib/undo";
 import { attachFlushListeners, WriteQueue } from "../lib/writeQueue";
 
 const queue = new WriteQueue(500);
+
+export function getWriteQueue(): WriteQueue {
+  return queue;
+}
 const projectPatches = new Map<string, PatchProjectInput>();
 const lanePatches = new Map<string, PatchLaneInput>();
 const clipPatches = new Map<string, PatchClipInput>();

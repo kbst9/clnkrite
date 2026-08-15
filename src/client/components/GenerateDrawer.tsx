@@ -1,16 +1,17 @@
 import { useMemo, useState } from "react";
 import { draftCaptionFromProject } from "@shared/caption";
+import { formatElapsed, jobKindLabel, jobStateLabel } from "@shared/jobs";
 import { SECTION_TAGS } from "@shared/types";
 import { useJobStore } from "../stores/jobStore";
 import { useProjectStore } from "../stores/projectStore";
 import { useTransportStore } from "../stores/transportStore";
 import { useUiStore } from "../stores/uiStore";
-import { JobChip } from "./JobChip";
 
 export function GenerateDrawer() {
   const drawer = useUiStore((s) => s.drawer);
   const close = useUiStore((s) => s.closeDrawer);
   const doc = useProjectStore((s) => s.doc);
+  const patchProject = useProjectStore((s) => s.patchProject);
   const jobs = useJobStore((s) => s.jobs);
   const submit = useJobStore((s) => s.submit);
   const playheadBeats = useTransportStore((s) => s.playheadBeats);
@@ -78,118 +79,128 @@ export function GenerateDrawer() {
   }
 
   return (
-    <aside className="absolute inset-y-0 right-0 z-20 flex w-[420px] flex-col border-l border-line bg-panel p-5 shadow-2xl">
-      <div className="mb-3 flex items-baseline justify-between">
-        <h2 className="text-xl font-semibold">Generate</h2>
-        <button type="button" className="font-mono text-xs text-mute" onClick={close}>
-          close
+    <aside className="absolute inset-y-0 right-0 z-20 flex w-[420px] flex-col border-l border-line bg-bg1">
+      <div className="flex h-8 items-center justify-between border-b border-line px-3">
+        <h2 className="text-[10px] font-medium uppercase tracking-[0.08em] text-fg-faint">GENERATE</h2>
+        <button type="button" className="ctrl h-6 px-2" onClick={close}>
+          ESC ×
         </button>
       </div>
-      <p className="mb-3 text-sm text-mute">
-        Music3 writes the whole band. Want parts? Right-click a clip and explode into stems. Target:{" "}
-        <span className="text-brass">{armed?.name ?? "no armed lane"}</span>
-      </p>
-      <div className="mb-2 flex flex-wrap gap-1">
-        {SECTION_TAGS.map((tag) => (
+      <div className="flex-1 overflow-auto px-3 py-3">
+        <p className="mb-3 font-sans text-[12px] text-fg-dim">
+          Music3 writes the whole band. Want parts? Right-click a clip and explode into stems. Target:{" "}
+          <span className="text-accent">{armed?.name ?? "no armed lane"}</span>
+        </p>
+        <label className="mb-3 flex items-center gap-2 text-[10px] uppercase tracking-[0.08em] text-fg-faint">
+          VIBE
+          <input
+            className="h-7 flex-1 px-2 text-[12px] normal-case tracking-normal text-fg"
+            value={doc.project.vibe}
+            onChange={(e) => patchProject({ vibe: e.target.value })}
+          />
+        </label>
+        <div className="mb-2 flex flex-wrap gap-1">
+          {SECTION_TAGS.map((tag) => (
+            <button
+              key={tag}
+              type="button"
+              className="h-5 border border-line px-1.5 text-[10px] text-fg-dim hover:border-line-strong hover:text-fg"
+              onClick={() => insertTag(tag)}
+            >
+              {tag}
+            </button>
+          ))}
+        </div>
+        <label className="mb-3 block text-[10px] uppercase tracking-[0.08em] text-fg-faint">
+          Lyrics
+          <textarea
+            className="mt-1 h-36 w-full bg-bg2 p-2 font-mono text-[12px] leading-4"
+            value={lyrics}
+            onChange={(e) => setLyrics(e.target.value)}
+          />
+        </label>
+        <div className="mb-1 flex items-center justify-between">
+          <span className="text-[10px] uppercase tracking-[0.08em] text-fg-faint">Caption</span>
           <button
-            key={tag}
             type="button"
-            className="rounded-sm border border-line px-1.5 py-0.5 font-mono text-[10px] text-mute hover:border-brass hover:text-brass"
-            onClick={() => insertTag(tag)}
+            className="text-[10px] uppercase text-accent"
+            onClick={() =>
+              setCaption(
+                draftCaptionFromProject({
+                  bpm: doc.project.bpm,
+                  keySig: doc.project.keySig,
+                  timeSig: doc.project.timeSig,
+                  vibe: doc.project.vibe,
+                }),
+              )
+            }
           >
-            {tag}
+            Draft from project
           </button>
-        ))}
-      </div>
-      <label className="mb-3 block text-xs uppercase tracking-widest text-mute">
-        Lyrics
+        </div>
         <textarea
-          className="mt-1 h-36 w-full p-2 font-mono text-sm"
-          value={lyrics}
-          onChange={(e) => setLyrics(e.target.value)}
+          className="mb-3 h-40 w-full bg-bg2 p-2 font-mono text-[12px] leading-4"
+          value={caption}
+          onChange={(e) => setCaption(e.target.value)}
         />
-      </label>
-      <div className="mb-1 flex items-center justify-between">
-        <span className="text-xs uppercase tracking-widest text-mute">Caption</span>
-        <button
-          type="button"
-          className="font-mono text-[10px] text-brass hover:underline"
-          onClick={() =>
-            setCaption(
-              draftCaptionFromProject({
-                bpm: doc.project.bpm,
-                keySig: doc.project.keySig,
-                timeSig: doc.project.timeSig,
-                vibe: doc.project.vibe,
-              }),
-            )
-          }
-        >
-          Draft from project
-        </button>
-      </div>
-      <textarea
-        className="mb-3 h-40 w-full p-2 font-mono text-xs"
-        value={caption}
-        onChange={(e) => setCaption(e.target.value)}
-      />
-      <div className="mb-4 flex gap-3">
-        <label className="flex-1 text-xs uppercase tracking-widest text-mute">
-          Seed
-          <div className="mt-1 flex gap-1">
+        <div className="mb-4 flex gap-3">
+          <label className="flex-1 text-[10px] uppercase tracking-[0.08em] text-fg-faint">
+            Seed
+            <div className="mt-1 flex gap-1">
+              <input
+                type="number"
+                className="h-7 w-full px-2 font-mono text-[12px]"
+                value={seed}
+                onChange={(e) => setSeed(Number(e.target.value) || 0)}
+              />
+              <button
+                type="button"
+                className="ctrl h-7 px-2"
+                onClick={() => setSeed(Math.floor(Math.random() * 1_000_000))}
+              >
+                ⚄
+              </button>
+            </div>
+          </label>
+          <label className="flex-1 text-[10px] uppercase tracking-[0.08em] text-fg-faint">
+            Duration
             <input
               type="number"
-              className="w-full px-2 py-1 font-mono"
-              value={seed}
-              onChange={(e) => setSeed(Number(e.target.value) || 0)}
+              min={10}
+              max={armed?.kind === "acestep" ? 600 : 240}
+              className="mt-1 h-7 w-full px-2 font-mono text-[12px]"
+              value={durationSec}
+              onChange={(e) => setDurationSec(Number(e.target.value) || 60)}
             />
-            <button
-              type="button"
-              className="border border-line px-2 text-brass"
-              onClick={() => setSeed(Math.floor(Math.random() * 1_000_000))}
-            >
-              ⚄
-            </button>
-          </div>
-        </label>
-        <label className="flex-1 text-xs uppercase tracking-widest text-mute">
-          Duration
-          <input
-            type="number"
-            min={10}
-            max={armed?.kind === "acestep" ? 600 : 240}
-            className="mt-1 w-full px-2 py-1 font-mono"
-            value={durationSec}
-            onChange={(e) => setDurationSec(Number(e.target.value) || 60)}
-          />
-        </label>
-      </div>
-      {armed?.kind === "acestep" && (
-        <label className="mb-3 block text-xs uppercase tracking-widest text-mute">
-          Inference steps
-          <input
-            type="number"
-            min={1}
-            max={64}
-            className="mt-1 w-full px-2 py-1 font-mono"
-            value={inferenceSteps}
-            onChange={(e) => setInferenceSteps(Number(e.target.value) || 8)}
-          />
-        </label>
-      )}
-      {error && <p className="mb-2 font-mono text-xs text-ember">{error}</p>}
-      <button
-        type="button"
-        disabled={busy}
-        onClick={() => void onSubmit()}
-        className="rounded-sm bg-brass py-2 font-mono text-xs font-semibold uppercase tracking-[0.2em] text-ink disabled:opacity-50"
-      >
-        {busy ? "Submitting…" : "Submit to GPU"}
-      </button>
-      <div className="mt-4 space-y-2">
-        {mine.map((job) => (
-          <JobChip key={job.id} job={job} />
-        ))}
+          </label>
+        </div>
+        {armed?.kind === "acestep" && (
+          <label className="mb-3 block text-[10px] uppercase tracking-[0.08em] text-fg-faint">
+            Inference steps
+            <input
+              type="number"
+              min={1}
+              max={64}
+              className="mt-1 h-7 w-full px-2 font-mono text-[12px]"
+              value={inferenceSteps}
+              onChange={(e) => setInferenceSteps(Number(e.target.value) || 8)}
+            />
+          </label>
+        )}
+        {error && <p className="mb-2 text-[12px] text-alert">{error}</p>}
+        <button type="button" disabled={busy} onClick={() => void onSubmit()} className="ctrl-accent w-full">
+          {busy ? "SUBMITTING…" : "SUBMIT TO GPU"}
+        </button>
+        <div className="mt-4 space-y-1">
+          {mine.map((job) => (
+            <div key={job.id} className="flex justify-between border border-line px-2 py-1 text-[12px]">
+              <span>
+                {jobKindLabel(job.kind)} <span className="text-fg-dim">{jobStateLabel(job.status)}</span>
+              </span>
+              <span className="text-fg-faint">{formatElapsed(Date.now() - job.createdAt)}</span>
+            </div>
+          ))}
+        </div>
       </div>
     </aside>
   );

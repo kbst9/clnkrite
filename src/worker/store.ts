@@ -1,5 +1,5 @@
 import { newId } from "../shared/ids";
-import { isTerminalJobStatus } from "../shared/jobs";
+import { INGEST_STALE_MS, ingestClaimStale, isTerminalJobStatus } from "../shared/jobs";
 import type {
   Asset,
   Clip,
@@ -291,9 +291,12 @@ export function createMemoryStore(): Store {
     },
     async claimJobForIngest(id) {
       const current = jobs.get(id) ?? null;
-      if (!current || (current.status !== "queued" && current.status !== "running")) {
-        return { claimed: false, job: current };
-      }
+      if (!current) return { claimed: false, job: null };
+      const claimable =
+        current.status === "queued" ||
+        current.status === "running" ||
+        (current.status === "ingesting" && ingestClaimStale(current.updatedAt));
+      if (!claimable) return { claimed: false, job: current };
       const job = { ...current, status: "ingesting" as const, updatedAt: now() };
       jobs.set(id, job);
       return { claimed: true, job };
@@ -879,12 +882,16 @@ export function createD1Store(db: D1Database): Store {
     },
     async claimJobForIngest(id) {
       const updatedAt = now();
+      const staleBefore = updatedAt - INGEST_STALE_MS;
       const result = await db
         .prepare(
           `UPDATE jobs SET status = 'ingesting', updated_at = ?
-           WHERE id = ? AND status IN ('queued', 'running')`,
+           WHERE id = ? AND (
+             status IN ('queued', 'running')
+             OR (status = 'ingesting' AND updated_at <= ?)
+           )`,
         )
-        .bind(updatedAt, id)
+        .bind(updatedAt, id, staleBefore)
         .run();
       return {
         claimed: (result.meta.changes ?? 0) === 1,

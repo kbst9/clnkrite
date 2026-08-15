@@ -1,17 +1,16 @@
 import { useEffect } from "react";
-import type { EnginesResponse } from "@shared/types";
 import { AddLaneDrawer } from "../components/AddLaneDrawer";
 import { BridgeBanner } from "../components/BridgeBanner";
 import { ClipMenu } from "../components/ClipMenu";
 import { GenerateDrawer } from "../components/GenerateDrawer";
+import { JobsPanel } from "../components/JobsPanel";
 import { PictureViewer } from "../components/PictureViewer";
 import { SynthNoteEditor } from "../components/SynthNoteEditor";
 import { Timeline } from "../components/Timeline";
 import { TopBar } from "../components/TopBar";
 import { toneEngine } from "../engine/toneEngine";
-import { api } from "../lib/api";
 import { loadAssetBytes } from "../lib/cache";
-import { computePeaks, uploadPeaks } from "../lib/peaks";
+import { computePeaks, loadPeaksForAsset, parsePeaks, putCachedPeaks, uploadPeaks } from "../lib/peaks";
 import { undoStack } from "../lib/undo";
 import { useJobStore } from "../stores/jobStore";
 import { useProjectStore } from "../stores/projectStore";
@@ -27,12 +26,11 @@ export function Editor({ projectId }: { projectId: string }) {
   const tick = useTransportStore((s) => s.tick);
   const openDrawer = useUiStore((s) => s.openDrawer);
   const zoomPxPerBeat = useUiStore((s) => s.zoomPxPerBeat);
-  const setBridge = useUiStore((s) => s.setBridge);
-  const setEngines = useUiStore((s) => s.setEngines);
   const selectedLaneIds = useTransportStore((s) => s.selectedLaneIds);
   const dragging = useUiStore((s) => s.dragging);
   const snapOn = useUiStore((s) => s.snapOn);
   const snapBeats = useUiStore((s) => s.snapBeats);
+  const selectedClipIds = useUiStore((s) => s.selectedClipIds);
 
   useEffect(() => {
     void loadProject(projectId);
@@ -54,21 +52,12 @@ export function Editor({ projectId }: { projectId: string }) {
   }, [tick]);
 
   useEffect(() => {
-    void (async () => {
-      try {
-        const engines = await api<EnginesResponse>("/api/engines");
-        setBridge(true);
-        setEngines(
-          Boolean(engines.health?.music3.up),
-          Boolean(engines.health?.acestep?.up),
-          Boolean(engines.health?.demucs.available),
-        );
-      } catch {
-        setBridge(false, "bridge_offline");
-        setEngines(false, false, false);
-      }
-    })();
-  }, [setBridge, setEngines]);
+    if (!doc) return;
+    for (const asset of doc.assets) {
+      if (asset.kind !== "audio") continue;
+      void loadPeaksForAsset(asset.id, asset.peaksR2Key);
+    }
+  }, [doc]);
 
   useEffect(() => {
     if (!doc) return;
@@ -87,14 +76,19 @@ export function Editor({ projectId }: { projectId: string }) {
     if (dragging) return;
     void toneEngine.rebuildSchedule(doc, async (assetId) => {
       const bytes = await loadAssetBytes(assetId);
-      try {
-        const ctx = new AudioContext();
-        const audio = await ctx.decodeAudioData(bytes.slice(0));
-        const peaks = computePeaks(audio.getChannelData(0), audio.sampleRate);
-        void uploadPeaks(assetId, peaks);
-        void ctx.close();
-      } catch {
-        // peaks are best-effort
+      const asset = useProjectStore.getState().doc?.assets.find((item) => item.id === assetId);
+      if (!asset?.peaksR2Key) {
+        try {
+          const ctx = new AudioContext();
+          const audio = await ctx.decodeAudioData(bytes.slice(0));
+          const peaks = computePeaks(audio.getChannelData(0), audio.sampleRate);
+          const parsed = parsePeaks(peaks);
+          if (parsed) putCachedPeaks(assetId, parsed);
+          void uploadPeaks(assetId, peaks);
+          void ctx.close();
+        } catch {
+          // peaks are best-effort
+        }
       }
       return bytes;
     });
@@ -110,6 +104,12 @@ export function Editor({ projectId }: { projectId: string }) {
       const project = useProjectStore.getState();
       const transport = useTransportStore.getState();
       const ids = ui.selectedClipIds;
+      if (e.key === "Escape") {
+        ui.closeDrawer();
+        ui.setContextMenu(null);
+        ui.setExplodeClipId(null);
+        return;
+      }
       if ((e.metaKey || e.ctrlKey) && e.key === "z") {
         e.preventDefault();
         if (e.shiftKey) undoStack.redo();
@@ -141,45 +141,42 @@ export function Editor({ projectId }: { projectId: string }) {
         project.removeClips(ids);
         ui.setSelectedClips([]);
       }
-      if (e.key === "Escape") ui.setContextMenu(null);
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   return (
-    <div className="relative flex h-full flex-col">
+    <div className="relative flex h-full flex-col bg-bg0">
       <BridgeBanner />
       <TopBar />
-      {loading && !doc && <p className="p-6 font-mono text-sm text-mute">Loading session…</p>}
-      {error && <p className="p-6 font-mono text-sm text-ember">{error}</p>}
+      {loading && !doc && <p className="p-3 text-[12px] text-fg-faint">LOADING SESSION…</p>}
+      {error && <p className="p-3 text-[12px] text-alert">{error}</p>}
       {doc && (
         <>
-          <div className="flex items-center justify-between border-b border-line px-4 py-2">
-            <button
-              type="button"
-              className="font-mono text-[11px] uppercase tracking-[0.2em] text-brass hover:underline"
-              onClick={() => openDrawer("add-lane")}
-            >
-              + Add lane
+          <div className="flex h-7 items-center justify-between border-b border-line px-2">
+            <button type="button" className="ctrl h-6" onClick={() => openDrawer("add-lane")}>
+              + ADD LANE
             </button>
-            <span className="font-mono text-[10px] text-mute">
-              zoom {zoomPxPerBeat}px/beat · ctrl+wheel · snap {snapOn ? snapBeats : "off"} · ,/. nudge · S split
-            </span>
           </div>
           {doc.lanes.length === 0 && (
-            <p className="border-b border-line px-4 py-3 font-mono text-xs text-mute">
-              Empty session. Add a Music3 lane to generate, or import a vocal to nudge into sync.
+            <p className="border-b border-line px-2 py-2 text-[12px] text-fg-faint">
+              EMPTY SESSION. ADD A MUSIC3 LANE TO GENERATE, OR IMPORT A VOCAL.
             </p>
           )}
           <Timeline />
           <SynthNoteEditor />
+          <div className="flex h-5 items-center border-t border-line bg-bg1 px-2 text-[10px] font-medium uppercase tracking-[0.08em] text-fg-faint">
+            ZOOM {zoomPxPerBeat}PX/B · SNAP {snapOn ? (snapBeats === 0.25 ? "1/4" : String(snapBeats)) : "OFF"} · SEL{" "}
+            {selectedClipIds.length} CLIPS · ,/. NUDGE · S SPLIT
+          </div>
         </>
       )}
       <PictureViewer />
       <ClipMenu />
       <AddLaneDrawer />
       <GenerateDrawer />
+      <JobsPanel />
     </div>
   );
 }

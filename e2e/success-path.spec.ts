@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 const project = { id: "p-success", title: "Success Path", bpm: 100, keySig: "A minor", timeSig: "4/4", vibe: "late neon", lengthBeats: 128, loopStartBeats: null, loopEndBeats: null, createdAt: 1, updatedAt: 1 };
 
-test("desk and new project", async ({ page }) => {
+test("ops table and new project", async ({ page }) => {
   await page.route("**/api/**", async (route) => {
     const url = route.request().url();
     const method = route.request().method();
@@ -13,8 +13,8 @@ test("desk and new project", async ({ page }) => {
     await route.fulfill({ status: 200, json: {} });
   });
   await page.goto("/");
-  await expect(page.getByText("The desk")).toBeVisible();
-  await page.getByPlaceholder("New project title").fill("Success Path");
-  await page.getByRole("button", { name: "New reel" }).click();
-  await expect(page.getByText("+ Add lane")).toBeVisible();
+  await expect(page.getByText("NO PROJECTS.")).toBeVisible();
+  await page.getByPlaceholder("Title").fill("Success Path");
+  await page.getByRole("button", { name: "CREATE" }).click();
+  await expect(page.getByText("+ ADD LANE")).toBeVisible();
 });

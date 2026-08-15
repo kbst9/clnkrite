@@ -110,6 +110,8 @@ export interface Job {
   resultAssetIds: string[];
   createdAt: number;
   updatedAt: number;
+  queuePosition?: number;
+  progress?: number | null;
 }
 
 export interface ProjectDocument {

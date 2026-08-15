@@ -64,16 +64,16 @@ export function PictureViewer() {
   if (!lane || !lane.visible || !pictureOpen || !clip || !asset) return null;
 
   return (
-    <div className="absolute bottom-4 right-4 z-30 w-[360px] overflow-hidden rounded-md border border-line bg-panel shadow-2xl">
-      <div className="flex items-center justify-between border-b border-line px-3 py-1 font-mono text-[10px] uppercase tracking-widest text-mute">
-        Picture
-        <button type="button" onClick={() => setPictureOpen(false)}>
-          hide
+    <div className="absolute bottom-4 right-4 z-30 w-[360px] border border-line bg-bg1">
+      <div className="flex h-6 items-center justify-between border-b border-line px-2 text-[10px] font-medium uppercase tracking-[0.08em] text-fg-faint">
+        PICTURE
+        <button type="button" className="text-fg-dim" onClick={() => setPictureOpen(false)}>
+          HIDE
         </button>
       </div>
       <video
         ref={videoRef}
-        className="aspect-video w-full bg-ink"
+        className="aspect-video w-full bg-bg0"
         src={`/api/assets/${asset.id}/blob`}
         muted
         playsInline

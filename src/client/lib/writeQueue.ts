@@ -7,15 +7,28 @@ export class WriteQueue {
   private items: QueuedWrite[] = [];
   private timer: ReturnType<typeof setTimeout> | null = null;
   private flushPromise: Promise<void> | null = null;
+  private listeners = new Set<() => void>();
   readonly delayMs: number;
 
   constructor(delayMs = 500) {
     this.delayMs = delayMs;
   }
 
+  subscribe(fn: () => void): () => void {
+    this.listeners.add(fn);
+    return () => {
+      this.listeners.delete(fn);
+    };
+  }
+
+  private notify(): void {
+    for (const fn of this.listeners) fn();
+  }
+
   enqueue(item: QueuedWrite): void {
     this.items = this.items.filter((q) => q.id !== item.id);
     this.items.push(item);
+    this.notify();
     this.schedule();
   }
 
@@ -35,6 +48,7 @@ export class WriteQueue {
 
     this.flushPromise = this.drain(init).finally(() => {
       this.flushPromise = null;
+      this.notify();
       if (this.items.length > 0) {
         this.schedule();
       } else if (this.timer) {

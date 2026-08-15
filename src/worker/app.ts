@@ -41,6 +41,32 @@ export type AppEnv = {
   Variables: { store: Store };
 };
 
+const ENGINES_CACHE_MS = 5_000;
+type EnginesStatus = 200 | 503;
+const enginesCache: {
+  env: Env | null;
+  body: EnginesResponse | null;
+  status: EnginesStatus;
+  until: number;
+  get(env: Env): { body: EnginesResponse; status: EnginesStatus } | null;
+  set(env: Env, body: EnginesResponse, status: EnginesStatus): void;
+} = {
+  env: null,
+  body: null,
+  status: 200,
+  until: 0,
+  get(env) {
+    if (this.env !== env || !this.body || Date.now() > this.until) return null;
+    return { body: this.body, status: this.status };
+  },
+  set(env, body, status) {
+    this.env = env;
+    this.body = body;
+    this.status = status;
+    this.until = Date.now() + ENGINES_CACHE_MS;
+  },
+};
+
 export interface AppOptions {
   storeFactory?: (env: Env) => Store;
 }
@@ -272,6 +298,20 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
     return c.json(updated);
   });
 
+  app.get("/api/assets/:id/peaks", async (c) => {
+    const asset = await c.get("store").getAsset(c.req.param("id"));
+    if (!asset) return jsonError(c, 404, "not_found");
+    if (!asset.peaksR2Key) return jsonError(c, 404, "peaks_missing");
+    const obj = await c.env.MEDIA.get(asset.peaksR2Key);
+    if (!obj) return jsonError(c, 404, "peaks_missing");
+    const headers = new Headers();
+    headers.set("Content-Type", "application/octet-stream");
+    headers.set("Cache-Control", "public, max-age=31536000, immutable");
+    const etag = obj.httpEtag ?? obj.etag;
+    if (etag) headers.set("ETag", etag);
+    return new Response(obj.body, { status: 200, headers });
+  });
+
   app.post("/api/projects/:id/jobs", async (c) => {
     const store = c.get("store");
     const projectId = c.req.param("id");
@@ -363,6 +403,11 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
     if (!job) return jsonError(c, 404, "not_found");
     if (isTerminalJobStatus(job.status)) return c.json(job);
 
+    if (job.status === "ingesting") {
+      job = await ingestSucceededJob(c.env, store, job);
+      if (isTerminalJobStatus(job.status)) return c.json(job);
+    }
+
     if (!job.bridgeJobId) return c.json(job);
 
     try {
@@ -422,6 +467,8 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
   });
 
   app.get("/api/engines", async (c) => {
+    const cached = enginesCache.get(c.env);
+    if (cached) return c.json(cached.body, cached.status);
     const kvRaw = await c.env.CONFIG.get("engines", "json");
     try {
       const health = await bridgeHealth(c.env);
@@ -437,6 +484,7 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
       };
       await c.env.CONFIG.put("engines", JSON.stringify(kvValue));
       const body: EnginesResponse = { online: true, health, kv: kvValue };
+      enginesCache.set(c.env, body, 200);
       return c.json(body);
     } catch {
       const body: EnginesResponse = {
@@ -445,6 +493,7 @@ export function createApp(options: AppOptions = {}): Hono<AppEnv> {
         health: null,
         kv: kvRaw,
       };
+      enginesCache.set(c.env, body, 503);
       return c.json(body, 503);
     }
   });
