@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { planStemExplode, stemLaneName } from "../src/shared/stems";
+import { nextStemHeaderMute, planStemExplode, stemLaneName } from "../src/shared/stems";
 import type { Clip, Lane } from "../src/shared/types";
 import { STEM_ROLES } from "../src/shared/types";
 
@@ -62,6 +62,18 @@ describe("stem explode", () => {
     expect(plan.lanes[2]?.name).toBe(stemLaneName("Guitar Song", "bass"));
     expect(plan.lanes.every((lane) => lane.parentLaneId === "parent")).toBe(true);
     expect(plan.clips.every((clip) => clip.startBeats === 8 && clip.cueInSec === 0.5)).toBe(true);
-    expect(plan.lanes[0]?.id).toBe("job-job9-lane-vocals");
+    expect(plan.lanes[0]?.id).toBe("stem-parent-lane-vocals");
+  });
+});
+
+describe("stem header toggle", () => {
+  it("never leaves parent and children both unmuted", () => {
+    const fromMutedParent = nextStemHeaderMute(true);
+    expect(fromMutedParent).toEqual({ parentMuted: false, childrenMuted: true });
+    expect(fromMutedParent.parentMuted && !fromMutedParent.childrenMuted).toBe(false);
+
+    const fromAudibleParent = nextStemHeaderMute(false);
+    expect(fromAudibleParent).toEqual({ parentMuted: true, childrenMuted: false });
+    expect(!fromAudibleParent.parentMuted && !fromAudibleParent.childrenMuted).toBe(false);
   });
 });
