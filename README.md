@@ -41,14 +41,9 @@ npx wrangler d1 migrations apply clnkrite-db --remote
 npx wrangler d1 migrations apply clnkrite-db --local
 ```
 
-Production secrets (Worker → https://h3.clunk.us):
+`wrangler.jsonc` vars already set `H3_BASE_URL=https://h3.clunk.us`. Leave `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` empty — do not invent a token or put values in git or wrangler vars. Live generate is 403 until those Worker secrets are set later. That is expected.
 
-```bash
-npx wrangler secret put CF_ACCESS_CLIENT_ID
-npx wrangler secret put CF_ACCESS_CLIENT_SECRET
-```
-
-`wrangler.jsonc` vars already set `H3_BASE_URL=https://h3.clunk.us`. Do not invent a new tunnel. Do not point `BRIDGE_BASE_URL` at that host or at example.com.
+Do not invent a new tunnel. Do not point `BRIDGE_BASE_URL` at h3.clunk.us or example.com.
 
 ## Deploy
 
@@ -90,8 +85,8 @@ See `docs/runbook.md`. Production Music3 is `POST /v1/music` on https://h3.clunk
 |---|---|---|
 | `H3_BASE_URL` | Worker `vars` / `.dev.vars` | MiniMax Local Media API origin. Production: `https://h3.clunk.us`. |
 | `BRIDGE_BASE_URL` | Optional `.dev.vars` only | Local ACE-Step / Demucs bridge. Do not set to example.com or h3.clunk.us. |
-| `CF_ACCESS_CLIENT_ID` | Worker secret | Access service-token id. Attached to every H3 fetch when set. |
-| `CF_ACCESS_CLIENT_SECRET` | Worker secret | Access service-token secret. |
+| `CF_ACCESS_CLIENT_ID` | Worker secret, optional | Access service-token id. Leave empty. Attached to H3 fetches only when set. |
+| `CF_ACCESS_CLIENT_SECRET` | Worker secret, optional | Access service-token secret. Leave empty. |
 | `DB` | D1 binding | Source of truth. |
 | `MEDIA` | R2 binding | Audio/video/peaks blobs. Never public. |
 | `CONFIG` | KV binding | `engines`, `defaults`, `settings:kevin`. |

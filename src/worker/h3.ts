@@ -149,8 +149,14 @@ export function music3RequestBody(params: Music3JobParams): Record<string, unkno
   return body;
 }
 
+function isAccessDenied(status: number): boolean {
+  return status === 401 || status === 403;
+}
+
 export async function h3Health(env: Env): Promise<H3Health> {
   const res = await h3Fetch(env, "/v1/health", {}, 8_000);
+  // Unauth GET is 403 HTML until Access secrets are set. Host is up; do not block Music3.
+  if (isAccessDenied(res.status)) return { up: true, model: "Music3" };
   if (!res.ok) throw new H3OfflineError();
   const body = asRecord(await res.json().catch(() => ({})));
   const model =
@@ -166,7 +172,7 @@ export async function h3CreateMusic(env: Env, params: Music3JobParams): Promise<
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(music3RequestBody(params)),
   });
-  if (res.status === 401 || res.status === 403) throw new H3OfflineError("h3_access_denied");
+  if (isAccessDenied(res.status)) throw new H3OfflineError("h3_access_denied");
   if (!res.ok) throw new H3OfflineError(`h3_http_${res.status}`);
   const jobId = parseH3JobId(await res.json().catch(() => ({})));
   if (!jobId) throw new H3OfflineError("h3_missing_job_id");
@@ -175,7 +181,7 @@ export async function h3CreateMusic(env: Env, params: Music3JobParams): Promise<
 
 export async function h3GetMusic(env: Env, jobId: string): Promise<H3JobView> {
   const res = await h3Fetch(env, `/v1/music/${encodeURIComponent(jobId)}`);
-  if (res.status === 401 || res.status === 403) throw new H3OfflineError("h3_access_denied");
+  if (isAccessDenied(res.status)) throw new H3OfflineError("h3_access_denied");
   if (!res.ok) throw new H3OfflineError(`h3_http_${res.status}`);
   return viewFromBody(await res.json().catch(() => ({})), jobId);
 }
@@ -187,13 +193,13 @@ export async function h3GetContent(env: Env, jobId: string): Promise<ArrayBuffer
     { headers: { Accept: "audio/mpeg, application/octet-stream, */*" } },
     120_000,
   );
-  if (res.status === 401 || res.status === 403) throw new H3OfflineError("h3_access_denied");
+  if (isAccessDenied(res.status)) throw new H3OfflineError("h3_access_denied");
   if (!res.ok) throw new H3OfflineError(`h3_http_${res.status}`);
   return res.arrayBuffer();
 }
 
 export async function h3CancelJob(env: Env, jobId: string): Promise<void> {
   const res = await h3Fetch(env, `/v1/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
-  if (res.status === 401 || res.status === 403) throw new H3OfflineError("h3_access_denied");
+  if (isAccessDenied(res.status)) throw new H3OfflineError("h3_access_denied");
   if (!res.ok && res.status !== 404) throw new H3OfflineError(`h3_http_${res.status}`);
 }

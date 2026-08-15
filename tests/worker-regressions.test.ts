@@ -586,8 +586,6 @@ function h3OnlyEnv(): Env {
       put: async () => undefined,
     } as unknown as KVNamespace,
     H3_BASE_URL: "https://h3.clunk.us",
-    CF_ACCESS_CLIENT_ID: "access-client-id",
-    CF_ACCESS_CLIENT_SECRET: "access-client-secret",
   };
 }
 
@@ -630,9 +628,36 @@ describe("H3 Music3 tunnel", () => {
     expect(body.health.demucs.available).toBe(false);
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({ method: "GET", url: "https://h3.clunk.us/v1/health" });
-    expect(calls[0]?.headers["cf-access-client-id"]).toBe("access-client-id");
-    expect(calls[0]?.headers["cf-access-client-secret"]).toBe("access-client-secret");
+    expect(calls[0]?.headers["cf-access-client-id"]).toBeUndefined();
+    expect(calls[0]?.headers["cf-access-client-secret"]).toBeUndefined();
     expect(calls.some((call) => call.url.endsWith("/health") && !call.url.includes("/v1/health"))).toBe(false);
+  });
+
+  it("keeps Music3 online when /v1/health is Access 403 and secrets are empty", async () => {
+    const store = createMemoryStore();
+    const app = createApp({ storeFactory: () => store });
+    const env = h3OnlyEnv();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        expect(headerMap(init)["cf-access-client-id"]).toBeUndefined();
+        expect(headerMap(init)["cf-access-client-secret"]).toBeUndefined();
+        if (String(input) === "https://h3.clunk.us/v1/health") {
+          return new Response("<html>Access</html>", { status: 403, headers: { "Content-Type": "text/html" } });
+        }
+        return new Response("no", { status: 404 });
+      }),
+    );
+
+    const response = await app.request("/api/engines", {}, env);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      online: boolean;
+      health: { music3: { up: boolean }; acestep: { up: boolean } | null };
+    };
+    expect(body.online).toBe(true);
+    expect(body.health.music3.up).toBe(true);
+    expect(body.health.acestep).toBeNull();
   });
 
   it("creates Music3 via POST /v1/music, polls, then ingests MP3 from /content", async () => {
@@ -695,8 +720,8 @@ describe("H3 Music3 tunnel", () => {
     expect(created.status).toBe("queued");
     expect(created.bridgeJobId).toBe("h3-job-1");
     const createCall = calls.find((call) => call.url.endsWith("/v1/music") && call.method === "POST");
-    expect(createCall?.headers["cf-access-client-id"]).toBe("access-client-id");
-    expect(createCall?.headers["cf-access-client-secret"]).toBe("access-client-secret");
+    expect(createCall?.headers["cf-access-client-id"]).toBeUndefined();
+    expect(createCall?.headers["cf-access-client-secret"]).toBeUndefined();
     expect(JSON.parse(createCall?.body ?? "{}")).toMatchObject({
       caption: "warm guitar",
       lyrics: "[Verse]\nla",
@@ -725,8 +750,41 @@ describe("H3 Music3 tunnel", () => {
     expect(asset?.r2Key.endsWith(".mp3")).toBe(true);
     expect(puts[0]?.type).toBe("audio/mpeg");
     expect(calls.some((call) => call.url.endsWith("/v1/music/h3-job-1/content"))).toBe(true);
-    expect(calls.every((call) => call.headers["cf-access-client-id"] === "access-client-id")).toBe(true);
-    expect(calls.every((call) => call.headers["cf-access-client-secret"] === "access-client-secret")).toBe(true);
+    expect(calls.every((call) => call.headers["cf-access-client-id"] === undefined)).toBe(true);
+    expect(calls.every((call) => call.headers["cf-access-client-secret"] === undefined)).toBe(true);
+  });
+
+  it("fails Music3 generate with h3_access_denied when POST /v1/music is 403", async () => {
+    const store = createMemoryStore();
+    const app = createApp({ storeFactory: () => store });
+    const env = h3OnlyEnv();
+    const project = await store.createProject({ title: "Access wall" });
+    const lane = await store.createLane(project.id, { kind: "music3", arm: true });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        if (String(input) === "https://h3.clunk.us/v1/music") {
+          return new Response("<html>Access</html>", { status: 403, headers: { "Content-Type": "text/html" } });
+        }
+        return new Response("no", { status: 404 });
+      }),
+    );
+
+    const response = await app.request(
+      `/api/projects/${project.id}/jobs`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "music3_generate",
+          laneId: lane!.id,
+          params: { lyrics: "[Instrumental]", caption: "test", seed: 1, durationSec: 10, playheadBeats: 0 },
+        }),
+      },
+      env,
+    );
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({ status: "failed", error: "h3_access_denied" });
   });
 });
 

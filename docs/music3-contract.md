@@ -12,7 +12,7 @@ Production Music3 is the MiniMax Local Media API on **https://h3.clunk.us** (exi
 | `GET /v1/music/{id}/content` | Stereo **MP3** (not WAV). Task string: `text-to-music`. |
 | `DELETE /v1/jobs/{id}` | Cancel / stop waiting. |
 
-Every request sends Cloudflare Access headers `CF-Access-Client-Id` and `CF-Access-Client-Secret` when those Worker secrets are set. Unauthenticated GET is 403 HTML.
+Access secrets stay empty. Do not invent a token. Unauthenticated GET is 403 HTML. Live generate is 403 until Worker secrets are set later. That is expected. When both secrets are set, they are attached to every H3 fetch.
 
 Also on the host (do not call except health): `/v1/models`, `/v1/videos*`, `/v1/assets`. GPU3 = Music3, GPU2 = H3. Independent queues.
 
@@ -22,7 +22,7 @@ Also on the host (do not call except health): `/v1/models`, `/v1/videos*`, `/v1/
 
 - Create is async 202. The Worker stores the remote id and returns. The client polls `GET /api/jobs/:id`; each poll does one `GET /v1/music/{id}`. Do not block a generate inside one Worker request.
 - `completed` → D1 `ingesting` → fetch `/content` → R2 as `audio/mpeg`. Duration comes from job params / H3 metadata / optional MP3 Xing parse. A WAV header is not required.
-- `/api/engines` is online when `GET /v1/health` succeeds so a Music3 lane can be added. ACE-Step stays absent unless a local Python bridge reports it.
+- `/api/engines` is online when `GET /v1/health` is 200 **or** Access 401/403, so a Music3 lane can be added before secrets are set. ACE-Step stays absent unless a local Python bridge reports it.
 
 Supported lyric section tags: `[Intro] [Verse] [Pre-Chorus] [Chorus] [Post-Chorus] [Bridge] [Instrumental] [Solo] [Outro]`.
 

@@ -10,6 +10,8 @@ import {
   jobTimeoutSec,
   mapBridgeStatus,
 } from "../src/shared/jobs";
+import { accessHeaders } from "../src/worker/access";
+import type { Env } from "../src/worker/env";
 import { mapH3Status, music3RequestBody } from "../src/worker/h3";
 
 describe("job state mapping", () => {
@@ -33,6 +35,7 @@ describe("job state mapping", () => {
       max_duration: 300,
       seed: 7,
     });
+    expect(accessHeaders({} as Env)).toEqual({});
   });
 
   it("treats succeeded/failed/cancelled as terminal", () => {
