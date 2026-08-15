@@ -1,5 +1,6 @@
 {
   "name": "clnkrite",
+  "workers_dev": true,
   "main": "src/worker/index.ts",
   "compatibility_date": "2026-08-01",
   "assets": {
@@ -29,6 +30,9 @@
   "alias": {
     "@shared": "./src/shared"
   },
+  "routes": [
+    { "pattern": "rite.clnkr.dev", "custom_domain": true }
+  ],
   "vars": {
     "BRIDGE_BASE_URL": "https://bridge.example.com"
   }
