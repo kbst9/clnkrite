@@ -1,8 +1,8 @@
-import { secToBeats } from "@shared/beats";
-import { captionPrefix, firstSectionTag } from "@shared/caption";
-import { planStemExplode, type StemArtifact } from "@shared/stems";
-import { STEM_ROLES } from "@shared/types";
-import type { Asset, Clip, Job, Music3JobParams, StemRole } from "@shared/types";
+import { secToBeats } from "../shared/beats";
+import { captionPrefix, firstSectionTag } from "../shared/caption";
+import { planStemExplode, type StemArtifact } from "../shared/stems";
+import { STEM_ROLES } from "../shared/types";
+import type { Asset, Clip, Job, Music3JobParams, StemRole } from "../shared/types";
 import { bridgeGetArtifact } from "./bridge";
 import type { Env } from "./env";
 import type { Store } from "./store";

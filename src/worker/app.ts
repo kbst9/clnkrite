@@ -1,8 +1,8 @@
 import { Hono } from "hono";
-import { secToBeats } from "@shared/beats";
-import { splitClip } from "@shared/clipOps";
-import { newId } from "@shared/ids";
-import { jobTimedOut, mapBridgeStatus, isTerminalJobStatus } from "@shared/jobs";
+import { secToBeats } from "../shared/beats";
+import { splitClip } from "../shared/clipOps";
+import { newId } from "../shared/ids";
+import { jobTimedOut, mapBridgeStatus, isTerminalJobStatus } from "../shared/jobs";
 import type {
   CreateClipInput,
   CreateJobInput,
@@ -16,13 +16,13 @@ import type {
   PatchLaneInput,
   PatchProjectInput,
   SplitClipInput,
-} from "@shared/types";
+} from "../shared/types";
 import {
   AUDIO_MIME_ALLOWLIST,
   MAX_AUDIO_BYTES,
   MAX_VIDEO_BYTES,
   VIDEO_MIME_ALLOWLIST,
-} from "@shared/types";
+} from "../shared/types";
 import {
   BridgeOfflineError,
   bridgeCancelJob,

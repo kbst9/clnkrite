@@ -1,4 +1,4 @@
-import type { BridgeHealth, BridgeJobView, JobKind, JobParams } from "@shared/types";
+import type { BridgeHealth, BridgeJobView, JobKind, JobParams } from "../shared/types";
 import type { Env } from "./env";
 
 export class BridgeOfflineError extends Error {

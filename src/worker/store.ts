@@ -1,5 +1,5 @@
-import { newId } from "@shared/ids";
-import { isTerminalJobStatus } from "@shared/jobs";
+import { newId } from "../shared/ids";
+import { isTerminalJobStatus } from "../shared/jobs";
 import type {
   Asset,
   Clip,
@@ -15,8 +15,8 @@ import type {
   Project,
   ProjectDocument,
   ProjectSummary,
-} from "@shared/types";
-import { LANE_KIND_NAMES } from "@shared/types";
+} from "../shared/types";
+import { LANE_KIND_NAMES } from "../shared/types";
 
 export interface Store {
   listProjects(): Promise<ProjectSummary[]>;

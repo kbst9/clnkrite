@@ -10,7 +10,7 @@
     {
       "binding": "DB",
       "database_name": "clnkrite-db",
-      "database_id": "REPLACE_AFTER_CREATE",
+      "database_id": "59afeed0-700e-49b7-82da-973aefcc5da5",
       "migrations_dir": "migrations"
     }
   ],
@@ -23,9 +23,12 @@
   "kv_namespaces": [
     {
       "binding": "CONFIG",
-      "id": "REPLACE_AFTER_CREATE"
+      "id": "62950c6ce4bc447ba3b863a518b0ec88"
     }
   ],
+  "alias": {
+    "@shared": "./src/shared"
+  },
   "vars": {
     "BRIDGE_BASE_URL": "https://bridge.example.com"
   }
